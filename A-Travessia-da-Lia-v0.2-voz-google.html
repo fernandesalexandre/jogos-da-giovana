@@ -1,0 +1,589 @@
+<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>A Travessia da Lia</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#e4eee5;color:#20473c;font:17px system-ui}main{max-width:760px;margin:auto;padding:16px}header,.tools,.controls{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}h1{font:clamp(30px,7vw,48px) Georgia;margin:10px 0}h2{font:28px Georgia;margin:0}button{font:700 16px system-ui;color:inherit;border:0;border-radius:14px;background:#fff0c9;padding:12px;min-height:48px;cursor:pointer}button:disabled{opacity:.4;cursor:default}button:focus-visible{outline:3px solid #166a60;outline-offset:3px}button[aria-pressed=true]{outline:4px solid #e5ab46;background:#fff6d6}canvas{display:block;width:100%;border-radius:24px;margin:12px 0}.card{background:#fffaf0;border-radius:24px;padding:18px;box-shadow:0 5px #c3d6c7}p{line-height:1.5}#instruction{min-height:50px}#audioStatus{font-size:14px;background:#f9e5ba;padding:10px;border-radius:10px}#friends{display:flex;justify-content:space-around;align-items:start;gap:10px;padding:16px 0}#friends.island{align-items:center}#friends.island .friend:nth-child(2){margin-top:36px}#friends.island .friend:nth-child(3){margin-top:12px}.friend{display:grid;justify-items:center;gap:7px;flex:1;min-width:0}.animal{font-size:48px}.target{width:100%;max-width:150px;min-height:76px;border:2px dashed #b7baa0;background:#f0eddb;font-size:34px}.target.full{border:2px solid #80a68c;background:#e2efce}.object{font-size:38px;min-width:68px;touch-action:none;user-select:none}.object.active{outline:4px solid #d49339}#tray{display:flex;justify-content:center;gap:12px;min-height:88px;align-items:center;background:#e3ece0;border-radius:18px;margin:14px 0}.tiny{font-size:13px}#go{background:#21685c;color:white}#status{min-height:24px}#boat{font-size:76px;text-align:center}#boat.sailing{animation:sail 2.5s ease-in-out forwards}@keyframes sail{from{transform:translateX(-80px)}to{transform:translateX(80px)}}[hidden]{display:none!important}@media(max-width:400px){main{padding:10px}.card{padding:12px}.animal{font-size:40px}.object{min-width:54px}button{padding:10px}}@media(prefers-reduced-motion:reduce){#boat.sailing{animation:none}}
+</style><main>
+<header><h1>A Travessia da Lia</h1><button id="restart">↻ Recomeçar</button></header>
+<canvas id="map" width="720" height="340" role="img" aria-label="Mar, morros e uma rota entre o cais e a ilha"></canvas>
+<section class="card">
+<h2 id="title"></h2><p id="instruction"></p>
+<div class="tools"><button id="repeat">🔊 Ouvir a Lia</button><button id="hint">💡 Uma pista</button><button id="mute" aria-pressed="false">🔊 Som ligado</button></div>
+<p id="audioStatus" role="status" hidden></p>
+<div id="friends"></div><div id="tray" aria-label="Bandeja de objetos"></div>
+<div id="boat" hidden aria-label="Barco navegando">⛵</div>
+<p id="status" role="status"></p>
+<div class="controls"><button id="undo">↩ Desfazer</button><button id="go"></button></div>
+<label class="tiny"><input id="reduce" type="checkbox"> Movimento reduzido</label>
+</section></main><script>
+/*!
+ * gigi-audio-hub.js — Motor de Voz Expressiva Compartilhada & Kalimba Web Audio para o Hub "Vários em Um"
+ * (Mapa Central + A Travessia da Lia + Ateliê de Delícias da Lia)
+ * Autor: Nikola (PC2). 100% compatível com a API GigiAudio.create() do Atlas.
+ * Sem dependências ou coleta de áudio. Vozes do aparelho podem usar rede.
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.GigiAudio = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var MALE_HINTS = /(daniel|felipe|ant[oô]nio|nicolau|humberto|\bmale\b|masculin)/i;
+
+  function scoreVoice(v, targetLang) {
+    var name = (v && v.name) || '';
+    var lang = (v && v.lang) || '';
+    var prefix = (targetLang || 'pt-BR').slice(0, 2).toLowerCase();
+    if (lang.toLowerCase().indexOf(prefix) !== 0) return -1;
+    var score = lang.toLowerCase() === (targetLang || 'pt-BR').toLowerCase() ? 40 : 22;
+    if (/^pt[-_]BR$/i.test(lang) && /google portugu[eê]s do brasil/i.test(name)) return 1000;
+    if (MALE_HINTS.test(name)) return 5;
+    if (/desktop/i.test(name)) score -= 25; // Rebaixa SAPI5 legada (Maria/Zira Desktop)
+    if (/(thalita|giovanna|let[ií]cia|yara|leila|ana|jenny|aria)/i.test(name)) score += 65;
+    else if (/francisca/i.test(name)) score += 60;
+    else if (/(natural|neural|online)/i.test(name)) score += 55;
+    else if (/(enhanced|premium|siri)/i.test(name)) score += 48;
+    else if (/google/i.test(name)) score += 42;
+    else if (/(luciana|vit[oó]ria|camila|raquel|helo[ií]sa|fernanda|samantha)/i.test(name)) score += 32;
+    else if (/maria/i.test(name)) score += 5;
+    return score;
+  }
+
+  /**
+   * Divide um texto longo em micro-frases expressivas com pausas respiratórias
+   * e contorno de entonação por pontuação (! = alegre, ? = convite, . = calmo),
+   * suportando também tags bilíngues opcionais [en: One, two, three!] para o Ateliê.
+   */
+  function splitExpressiveChunks(input, baseRate, basePitch) {
+    if (Array.isArray(input)) return input;
+    var text = String(input || '').trim();
+    if (!text) return [];
+
+    // Separar tags explícitas [en: ...] se presentes
+    var parts = text.split(/(\[en:[^\]]+\])/gi);
+    var chunks = [];
+
+    parts.forEach(function (part) {
+      if (!part || !part.trim()) return;
+      var mEn = part.match(/^\[en:\s*([^\]]+)\]$/i);
+      if (mEn) {
+        chunks.push({
+          text: mEn[1].trim(),
+          lang: 'en-US',
+          rate: 0.96,
+          pitch: 1.10,
+          pause: 180
+        });
+        return;
+      }
+      // Dividir por frases terminadas em ! ? . mantendo a pontuação
+      var sentences = part.match(/[^!?.]+[!?.\u2026]+|[^!?.]+$/g) || [part];
+      sentences.forEach(function (s, idx) {
+        var clean = s.trim();
+        if (!clean) return;
+        var isExclam = /!$/.test(clean);
+        var isQuest = /\?$/.test(clean);
+        var r = isExclam ? Math.min(1.06, baseRate + 0.04) : (isQuest ? Math.max(0.96, baseRate - 0.02) : baseRate);
+        var p = isExclam ? Math.min(1.15, basePitch + 0.01) : (isQuest ? Math.min(1.15, basePitch + 0.01) : basePitch);
+        chunks.push({
+          text: clean,
+          lang: 'pt-BR',
+          rate: Number(r.toFixed(2)),
+          pitch: Number(p.toFixed(2)),
+          pause: 170
+        });
+      });
+    });
+
+    return chunks;
+  }
+
+  function create(opts) {
+    opts = opts || {};
+    var win = opts.window || (typeof window !== 'undefined' ? window : {});
+    var doc = opts.document || (typeof document !== 'undefined' ? document : null);
+    var cfg = {
+      lang: opts.lang || 'pt-BR',
+      rate: opts.rate != null ? opts.rate : 1.05,
+      pitch: opts.pitch != null ? opts.pitch : 1.14,
+      volume: opts.volume != null ? opts.volume : 1,
+      maxSpeakMs: opts.maxSpeakMs || 15000,
+      expressiveProsody: opts.expressiveProsody !== false,
+      onCaption: opts.onCaption || function () {},
+      onState: opts.onState || opts.onDiagnostics || function () {},
+      onProblem: opts.onProblem || function () {}
+    };
+
+    var state = {
+      unlocked: false,
+      muted: !!opts.muted,
+      ctx: null,
+      notes: [],
+      voice: null,
+      enVoice: null,
+      voicesChecked: false,
+      clips: {},
+      currentAudio: null,
+      speakToken: 0,
+      watchdog: null,
+      chunkTimer: null,
+      lastMode: 'none',
+      lastError: null
+    };
+
+    var synth = win.speechSynthesis || null;
+    var Utter = win.SpeechSynthesisUtterance || null;
+    var AC = win.AudioContext || win.webkitAudioContext || null;
+
+    function emit() { try { cfg.onState(getDiagnostics()); } catch (e) {} }
+    function reportProblem(reason) {
+      state.lastError = reason;
+      emit();
+      try { cfg.onProblem(reason, getDiagnostics()); } catch (e) {}
+    }
+
+    function pickBestVoice(targetLang) {
+      if (!synth || !synth.getVoices) return null;
+      var voices = synth.getVoices() || [];
+      state.voicesChecked = true;
+      var scored = voices
+        .map(function (v) { return { v: v, s: scoreVoice(v, targetLang) }; })
+        .filter(function (x) { return x.s >= 0; })
+        .sort(function (a, b) { return b.s - a.s; });
+      return scored.length ? scored[0].v : null;
+    }
+
+    function refreshVoice() {
+      state.voice = pickBestVoice(cfg.lang);
+      state.enVoice = pickBestVoice('en-US');
+      emit();
+    }
+
+    if (synth) {
+      refreshVoice();
+      if (typeof synth.addEventListener === 'function') synth.addEventListener('voiceschanged', refreshVoice);
+      else if ('onvoiceschanged' in synth) synth.onvoiceschanged = refreshVoice;
+    }
+
+    function unlock() {
+      if (state.unlocked) { resumeCtx(); return true; }
+      try {
+        if (AC) {
+          state.ctx = state.ctx || new AC();
+          resumeCtx();
+          var b = state.ctx.createBuffer(1, 1, 22050);
+          var s = state.ctx.createBufferSource();
+          s.buffer = b; s.connect(state.ctx.destination);
+          if (s.start) s.start(0); else if (s.noteOn) s.noteOn(0);
+        }
+        state.unlocked = true;
+      } catch (e) { state.lastError = String(e && e.message || e); }
+      emit();
+      return state.unlocked;
+    }
+
+    function resumeCtx() {
+      try { if (state.ctx && state.ctx.state === 'suspended') state.ctx.resume(); } catch (e) {}
+    }
+
+    function stopSpeech() {
+      state.speakToken++;
+      state.notes.forEach(function(n){try{n.osc.stop();n.osc.disconnect();n.gain.disconnect();}catch(e){}});
+      state.notes = [];
+      if (state.watchdog) { clearTimeout(state.watchdog); state.watchdog = null; }
+      if (state.chunkTimer) { clearTimeout(state.chunkTimer); state.chunkTimer = null; }
+      try { if (synth) synth.cancel(); } catch (e) {}
+      if (state.currentAudio) {
+        try { state.currentAudio.pause(); } catch (e) {}
+        state.currentAudio = null;
+      }
+    }
+
+    function speak(text, o) {
+      o = o || {};
+      stopSpeech();
+      var token = state.speakToken;
+      var done = false;
+      state.lastError = null;
+
+      var displayCaption = Array.isArray(text)
+        ? text.map(function (c) { return c.text; }).join(' ')
+        : String(text || '').replace(/\[en:\s*([^\]]+)\]/gi, '$1');
+
+      function finish() {
+        if (done || token !== state.speakToken) return;
+        done = true;
+        if (state.watchdog) { clearTimeout(state.watchdog); state.watchdog = null; }
+        if (state.chunkTimer) { clearTimeout(state.chunkTimer); state.chunkTimer = null; }
+        if (o.onEnd) try { o.onEnd(); } catch (e) {}
+      }
+
+      try { cfg.onCaption(displayCaption); } catch (e) {}
+
+      if (state.muted || !state.unlocked) {
+        state.lastMode = 'caption-only'; emit();
+        setTimeout(finish, 0);
+        return { mode: 'caption-only' };
+      }
+
+      var clip = o.key && state.clips[o.key];
+      if (clip && (win.Audio || (typeof Audio !== 'undefined'))) {
+        try {
+          var A = win.Audio || Audio;
+          var a = new A(clip);
+          a.volume = cfg.volume;
+          a.onended = finish;
+          a.onerror = function () { speechSequence(); };
+          state.currentAudio = a;
+          var p = a.play();
+          if (p && p.catch) p.catch(function () { speechSequence(); });
+          state.lastMode = 'clip'; emit();
+          armWatchdog(token, finish);
+          return { mode: 'clip' };
+        } catch (e) { state.lastError = String(e && e.message || e); }
+      }
+
+      return speechSequence();
+
+      function speechSequence() {
+        if (token !== state.speakToken || done) return { mode: 'stale' };
+        if (!synth || !Utter) {
+          state.lastMode = 'caption-only';
+          reportProblem('speech-unavailable');
+          setTimeout(finish, 0);
+          return { mode: 'caption-only' };
+        }
+        if (!state.voice) refreshVoice();
+
+        var chunks = cfg.expressiveProsody
+          ? splitExpressiveChunks(text, cfg.rate, cfg.pitch)
+          : [{ text: displayCaption, lang: cfg.lang, rate: cfg.rate, pitch: cfg.pitch, pause: 0 }];
+
+        if (!chunks.length) {
+          setTimeout(finish, 0);
+          return { mode: 'caption-only' };
+        }
+
+        state.lastMode = 'speech'; emit();
+        armWatchdog(token, finish);
+
+        var sequenceVoice = state.voice, sequenceEnVoice = state.enVoice;
+        var idx = 0;
+        function playNextChunk() {
+          if (token !== state.speakToken || done) return;
+          if (idx >= chunks.length) { finish(); return; }
+          var c = chunks[idx++];
+          try {
+            var u = new Utter(c.text);
+            var isEn = /^en/i.test(c.lang || '');
+            var chosenVoice = isEn ? sequenceEnVoice : sequenceVoice;
+            u.lang = (chosenVoice && chosenVoice.lang) || c.lang || cfg.lang;
+            if (chosenVoice) u.voice = chosenVoice;
+            u.rate = c.rate != null ? c.rate : cfg.rate;
+            u.pitch = c.pitch != null ? c.pitch : cfg.pitch;
+            u.volume = cfg.volume;
+
+            var chunkDone = false;
+            function nextOrFinish() {
+              if (chunkDone || token !== state.speakToken || done) return;
+              chunkDone = true;
+              if (idx >= chunks.length) {
+                finish();
+              } else {
+                state.chunkTimer = setTimeout(playNextChunk, c.pause != null ? c.pause : 180);
+              }
+            }
+            u.onend = nextOrFinish;
+            u.onerror = function (ev) {
+              if (token !== state.speakToken || done) return;
+              reportProblem('speech:' + ((ev && ev.error) || 'error'));
+              finish();
+            };
+            synth.speak(u);
+          } catch (e) {
+            reportProblem(String(e && e.message || e));
+            finish();
+          }
+        }
+
+        playNextChunk();
+        return { mode: 'speech', chunks: chunks.length };
+      }
+    }
+
+    function armWatchdog(token, finish) {
+      if (state.watchdog) clearTimeout(state.watchdog);
+      state.watchdog = setTimeout(function () {
+        if (token !== state.speakToken) return;
+        try { if (synth) synth.cancel(); } catch (e) {}
+        reportProblem('speech-timeout');
+        finish();
+      }, cfg.maxSpeakMs);
+    }
+
+    // Paleta acústica Kalimba/Marimba compartilhada (Hub + Travessia + Ateliê de Delícias)
+    var CHIMES = {
+      ok:       [[523.25, 0.00, 0.12], [659.25, 0.09, 0.16]],
+      undo:     [[440.00, 0.00, 0.10], [349.23, 0.08, 0.14]],
+      soft:     [[392.00, 0.00, 0.18]],
+      embarcar: [[392.00, 0.00, 0.14], [523.25, 0.11, 0.14], [659.25, 0.22, 0.22]],
+      hub:      [[587.33, 0.00, 0.12], [739.99, 0.09, 0.14], [880.00, 0.18, 0.22]],
+      confeitar:[[659.25, 0.00, 0.10], [783.99, 0.08, 0.12], [1046.50, 0.16, 0.20]],
+      forno:    [[523.25, 0.00, 0.14], [659.25, 0.12, 0.14], [783.99, 0.24, 0.14], [1046.50, 0.36, 0.26]]
+    };
+
+    function chime(name) {
+      if (state.muted || !state.unlocked || !state.ctx) return false;
+      var notes = CHIMES[name] || CHIMES.soft;
+      try {
+        resumeCtx();
+        var t0 = state.ctx.currentTime;
+        notes.forEach(function (n) {
+          var osc = state.ctx.createOscillator();
+          var g = state.ctx.createGain();
+          osc.type = 'sine'; osc.frequency.value = n[0];
+          g.gain.setValueAtTime(0.0001, t0 + n[1]);
+          g.gain.exponentialRampToValueAtTime(0.18 * cfg.volume, t0 + n[1] + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + n[1] + n[2]);
+          osc.connect(g); g.connect(state.ctx.destination);
+          state.notes.push({osc:osc,gain:g});
+          osc.start(t0 + n[1]); osc.stop(t0 + n[1] + n[2] + 0.02);
+        });
+        return true;
+      } catch (e) { state.lastError = String(e && e.message || e); return false; }
+    }
+
+    function onVisibility() {
+      if (!doc) return;
+      if (doc.hidden) stopSpeech();
+      else resumeCtx();
+    }
+    if (doc && doc.addEventListener) {
+      doc.addEventListener('visibilitychange', onVisibility);
+      if (win.addEventListener) win.addEventListener('pagehide', stopSpeech);
+    }
+
+    function dispose() {
+      stopSpeech();
+      if (doc && doc.removeEventListener) doc.removeEventListener('visibilitychange',onVisibility);
+      if (win.removeEventListener) win.removeEventListener('pagehide',stopSpeech);
+      if (synth && synth.removeEventListener) synth.removeEventListener('voiceschanged',refreshVoice);
+      if (state.ctx && state.ctx.close) { try { state.ctx.close().catch(function(){}); } catch(e){} }
+    }
+    function registerClip(key, dataUri) {
+      if (typeof dataUri === 'string' && /^data:audio\//.test(dataUri)) state.clips[key] = dataUri;
+      else throw new Error('registerClip exige data URI audio/*');
+    }
+    function setMuted(m) { state.muted = !!m; if (state.muted) stopSpeech(); emit(); }
+
+    function getDiagnostics() {
+      var v = state.voice;
+      var sc = v ? scoreVoice(v, cfg.lang) : -1;
+      return {
+        unlocked: state.unlocked,
+        muted: state.muted,
+        hasSpeechSynthesis: !!(synth && Utter),
+        hasAudioContext: !!AC,
+        ctxState: state.ctx ? state.ctx.state : null,
+        voice: v ? { name: v.name, lang: v.lang, localService: !!v.localService, score: sc } : null,
+        enVoice: state.enVoice ? { name: state.enVoice.name, lang: state.enVoice.lang } : null,
+        voiceLooksFeminine: v ? !MALE_HINTS.test(v.name) : false,
+        voiceIsNeuralNatural: sc >= 90,
+        childLikeTimbreVerified: false,
+        clips: Object.keys(state.clips),
+        lastMode: state.lastMode,
+        lastError: state.lastError
+      };
+    }
+
+    return {
+      unlock: unlock, speak: speak, stop: stopSpeech, chime: chime, dispose: dispose,
+      registerClip: registerClip, setMuted: setMuted, getDiagnostics: getDiagnostics,
+      refreshVoice: refreshVoice, splitExpressiveChunks: splitExpressiveChunks
+    };
+  }
+
+  return { create: create, scoreVoice: scoreVoice, splitExpressiveChunks: splitExpressiveChunks };
+});
+
+</script><script>
+(()=>{
+const $=id=>document.getElementById(id);
+const c=$('map').getContext('2d');
+let state={scene:'intro',positions:[-1,-1,-1],selected:null,history:[],hints:0},epoch=0,utterance=null,travelTimer=null,voiceTimer=null,voiceReadyTimer=null,muted=false,drag=null,suppressClick=false;
+const reduce=window.matchMedia?.('(prefers-reduced-motion: reduce)').matches||false;
+$('reduce').checked=reduce;
+function shape(color,points){c.fillStyle=color;c.beginPath();points.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.closePath();c.fill()}
+function circle(x,y,r,color){c.fillStyle=color;c.beginPath();c.arc(x,y,r,0,7);c.fill()}
+function line(color,width,points){c.strokeStyle=color;c.lineWidth=width;c.lineCap='round';c.setLineDash([]);c.beginPath();points.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.stroke()}
+function draw(){
+ const water=c.createLinearGradient(0,0,0,340);water.addColorStop(0,'#164e65');water.addColorStop(1,'#73c9b8');c.fillStyle=water;c.fillRect(0,0,720,340);
+ for(let i=0;i<80;i++){const x=i*73%720,y=i*37%340;line('#c4f8df55',1,[[x,y],[x+8,y-2],[x+21,y]])}
+ const land=[[0,57],[74,37],[142,42],[229,73],[296,112],[365,116],[429,93],[467,120],[453,157],[390,193],[303,190],[225,177],[146,215],[80,252],[0,230]];
+ shape('#3f9e90',land.map(([x,y])=>[x,y+13]));shape('#efd390',land);shape('#4b8364',[[0,56],[74,38],[143,45],[220,76],[290,119],[354,132],[423,107],[451,121],[433,144],[383,172],[301,164],[223,148],[135,190],[73,225],[0,199]]);
+ shape('#326751',[[0,99],[62,52],[123,106],[175,72],[233,122],[196,134],[142,126],[83,152],[19,148]]);
+ shape('#78a77a',[[0,110],[62,52],[77,89],[112,110],[75,118],[47,105]]);
+ shape('#e9cc91',[[460,173],[514,153],[574,166],[597,198],[565,233],[504,228],[464,204]]);
+ shape('#668e64',[[470,182],[512,159],[571,174],[581,197],[555,219],[507,214]]);
+ for(let i=0;i<15;i++){const x=24+i*22,y=157+(i*17)%23;circle(x,y,6,'#386951');circle(x-1,y-2,4,'#8ca471')}
+ const route=[[110,191],[285,150],[523,196],[636,101]];
+ c.strokeStyle='#fff2bd';c.lineWidth=3;c.setLineDash([5,9]);c.beginPath();c.moveTo(...route[0]);c.bezierCurveTo(197,203,219,132,...route[1]);c.bezierCurveTo(370,116,422,230,...route[2]);c.quadraticCurveTo(596,221,...route[3]);c.stroke();c.setLineDash([]);
+ for(let i=0;i<3;i++){const x=92+i*15,y=160+i%2*7;circle(x,y,6,'#f8e9c2');line('#b97557',1,[[x-4,y+3],[x,y-3],[x+4,y+3]])}
+ for(let i=0;i<5;i++)circle(258+i*11,126+i*2,5,'#d3bd94');
+ shape('#743c36',[[486,159],[544,159],[531,173],[499,173]]);line('#f4e2ad',2,[[515,159],[515,123]]);shape('#fff1c8',[[514,124],[514,155],[492,155]]);
+ shape('#aff0c966',[[640,74],[720,42],[720,109]]);
+ shape('#efe0ba',[[622,96],[627,54],[647,54],[654,96]]);shape('#be6051',[[625,73],[649,73],[652,82],[624,82]]);shape('#a74642',[[622,55],[637,40],[652,55]]);c.fillStyle='#f5bc57';c.fillRect(632,57,11,10);
+ route.forEach(([x,y],i)=>{circle(x,y,14,'#fff2c6');circle(x,y,10,i===(state.scene==='island'?2:0)?'#bd633d':'#24675f');c.fillStyle='white';c.font='bold 12px system-ui';c.textAlign='center';c.fillText(i+1,x,y+4)});
+ if(state.scene==="ending"){
+  c.fillStyle='#6d4932';c.fillRect(329,244,62,37);c.fillStyle='#d88b3b';c.fillRect(334,247,52,15);c.fillStyle='#ffd779';c.fillRect(355,258,10,12);
+  [[332,231],[365,226],[394,235]].forEach(([x,y])=>circle(x,y,4,'#ffe3a0'));
+ }
+}
+
+const lines={
+intro:'Oi! Eu sou a Lia. Vamos passear de barco? Cada bichinho precisa de um cesto. Você me ajuda a entregar um para cada um?',
+dock:'Cada bichinho precisa de um cesto. Você pode tocar num cesto e depois num bichinho. Também pode arrastar.',
+dockDone:'Você deu um cesto para cada bichinho. Todos estão prontos para viajar!',
+island:'Chegamos! Está fazendo sol. Vamos dar um chapéu para cada amigo?',
+islandDone:'Agora cada amigo tem um chapéu. Todos podem passear protegidos do sol!',
+ending:'Se quiser, agora você pode brincar com o vovô. Escolha três brinquedos e dê um objeto para cada um. Vocês também podem desenhar a viagem.',
+travel:'Vamos até a ilha!'
+};
+const active=()=>state.scene==='dock'||state.scene==='island';
+const complete=()=>state.positions.every(p=>p>=0)&&new Set(state.positions).size===3;
+const object=()=>state.scene==='island'?'👒':'🧺';
+
+const audioPlayer=window.GigiAudio.create({
+ window,document,lang:'pt-BR',rate:1.05,pitch:1.14,maxSpeakMs:30000,
+ onCaption(text){$('instruction').textContent=text;},
+ onDiagnostics(d){
+  if(!muted&&(d.lastError||d.lastMode==='caption-only')){
+   audioWarning('A voz não tocou ou foi interrompida. Confira o volume e toque em Ouvir a Lia. Um adulto pode ler a instrução.');
+  }
+ }
+});
+function cancelSpeech(){clearTimeout(voiceTimer);audioPlayer.stop();}
+function stopScene(){
+ epoch++;clearTimeout(travelTimer);travelTimer=null;cancelSpeech();drag=null;suppressClick=false;
+}
+function audioWarning(message){$('audioStatus').hidden=false;$('audioStatus').textContent=message}
+function speak(text){
+ cancelSpeech();
+ if(document.hidden)return;
+ $('audioStatus').hidden=true;
+ audioPlayer.setMuted(muted);
+ audioPlayer.unlock();
+ audioPlayer.speak(text);
+}
+function instruction(){return active()&&complete()?lines[state.scene+'Done']:lines[state.scene]}
+function remember(){state.history.push([...state.positions])}
+function deliver(id,destination){
+ if(!active()||id<0||id>2)return;
+ const other=state.positions.findIndex((p,i)=>p===destination&&i!==id);
+ if(other>=0){
+  const text=state.scene==='dock'?'Esse bichinho já tem um cesto. Você pode devolver o cesto dele ou procurar quem ainda está sem.':'Esse amigo já tem um chapéu. Você pode devolver o chapéu dele ou procurar quem ainda está sem.';
+  $('status').textContent=text;speak(text);return;
+ }
+ if(state.positions[id]===destination){state.selected=null;render();return;}
+ remember();state.positions[id]=destination;state.selected=null;render();
+ if(complete()){audioPlayer.chime('ok');speak(instruction());}
+}
+function reset(scene='intro'){
+ stopScene();state={scene,positions:[-1,-1,-1],selected:null,history:[],hints:0};$('audioStatus').hidden=true;render();
+}
+function select(id){
+ if(!active())return;
+ if(state.positions[id]>=0){remember();state.positions[id]=-1;state.selected=null;}
+ else state.selected=state.selected===id?null:id;
+ render();
+}
+function target(destination){
+ if(state.selected!==null)deliver(state.selected,destination);
+ else{
+  const item=state.positions.indexOf(destination);
+  if(item>=0)select(item);
+  else{$('status').textContent='Escolha primeiro um '+(state.scene==='dock'?'cesto.':'chapéu.');speak($('status').textContent);}
+ }
+}
+function createButton(label,icon,handler){
+ const b=document.createElement('button');b.textContent=icon;b.setAttribute('aria-label',label);b.onclick=handler;return b;
+}
+function makeObject(id){
+ let dragged=false;
+ const b=createButton((state.scene==='dock'?'Cesto ':'Chapéu ')+(id+1),object(),()=>{if(dragged){dragged=false;return}select(id)});
+ b.className='object'+(state.selected===id?' active':'');b.setAttribute('aria-pressed',String(state.selected===id));b.dataset.object=id;
+ b.onpointerdown=e=>{if(!active()||e.button!==0)return;drag={id,x:e.clientX,y:e.clientY,pointer:e.pointerId,moved:false};b.setPointerCapture?.(e.pointerId)};
+ b.onpointermove=e=>{if(drag&&drag.pointer===e.pointerId&&Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>10)drag.moved=true};
+ b.onpointerup=e=>{
+  if(!drag||drag.pointer!==e.pointerId)return;
+  const d=drag;drag=null;
+  if(!d.moved)return;
+  dragged=true;e.preventDefault();
+  const hit=document.elementFromPoint(e.clientX,e.clientY)?.closest('[data-target]');
+  if(hit)deliver(d.id,Number(hit.dataset.target));
+  else if(document.elementFromPoint(e.clientX,e.clientY)?.closest('#tray')&&state.positions[d.id]>=0){remember();state.positions[d.id]=-1;state.selected=null;render()}
+  else{$('status').textContent='O objeto voltou ao lugar. Você também pode tocar nele e depois num amigo.';}
+ };
+ b.onpointercancel=()=>{drag=null;suppressClick=false};
+ return b;
+}
+function render(){
+ draw();$('title').textContent={intro:'Um passeio pela costa',dock:'Todos a bordo',travel:'A caminho da ilha',island:'Sol na ilha',ending:'Uma aventura para continuar em casa'}[state.scene];
+ $('instruction').textContent=instruction();
+ $('status').textContent='';
+ $('friends').replaceChildren();$('tray').replaceChildren();
+ $('friends').className=state.scene==='island'?'island':'';
+ $('tray').hidden=!active();$('hint').hidden=!active()||complete();
+ $('undo').hidden=!active();$('undo').disabled=!state.history.length;
+ $('boat').hidden=state.scene!=='travel';$('boat').className=state.scene==='travel'&&!$('reduce').checked?'sailing':'';
+ $('go').hidden=active()&&!complete()||state.scene==='travel';
+ $('go').textContent={intro:'⛵ Começar',dock:'⛵ Embarcar',island:'☀️ Continuar',ending:'↻ Brincar de novo'}[state.scene]||'';
+ if(active()){
+  const animals=state.scene==='dock'?['🐰','🐻','🐱']:['🐵','🐶','🐼'];
+  animals.forEach((animal,destination)=>{
+   const friend=document.createElement('div');friend.className='friend';
+   const art=document.createElement('span');art.className='animal';art.textContent=animal;art.setAttribute('aria-hidden','true');friend.append(art);
+   const id=state.positions.indexOf(destination);
+   const b=createButton('Amigo '+(destination+1)+(id>=0?', com objeto. Toque para devolver.':', sem objeto.'),id>=0?object():'＋',()=>target(destination));
+   b.className='target'+(id>=0?' full':'');b.dataset.target=destination;friend.append(b);
+   $('friends').append(friend);
+  });
+  state.positions.forEach((p,id)=>{if(p<0)$('tray').append(makeObject(id))});
+  if(complete())$('status').textContent=instruction();
+ }
+}
+$('go').onclick=()=>{
+ if(state.scene==='intro'){reset('dock');speak(lines.intro);}
+ else if(state.scene==='dock'&&complete()){
+  stopScene();state.scene='travel';render();audioPlayer.chime('embarcar');speak(lines.travel);
+  const version=epoch;travelTimer=setTimeout(()=>{if(version===epoch){reset('island');speak(lines.island)}},$('reduce').checked?1000:2800);
+ }else if(state.scene==='island'&&complete()){reset('ending');speak(lines.ending)}
+ else if(state.scene==='ending'){reset('dock');speak(lines.intro)}
+};
+$('restart').onclick=()=>{reset('intro');};
+$('repeat').onclick=()=>{
+ if(state.scene==='travel'&&!travelTimer){reset('island');speak(lines.island);return;}
+ speak(instruction());
+};
+$('hint').onclick=()=>{
+ const item=state.scene==='dock'?'cesto':'chapéu';state.hints++;
+ const text=state.hints===1?'Quem ainda está sem '+item+'?':'Toque num '+item+'. Depois toque num amigo que ainda não recebeu.';
+ $('instruction').textContent=text;speak(text);
+ if(state.hints>=2){
+  const first=state.positions.indexOf(-1);state.selected=first<0?null:first;
+  const empty=[0,1,2].find(i=>!state.positions.includes(i));
+  render();$('instruction').textContent=text;
+  if(empty!==undefined)$('friends').querySelector('[data-target="'+empty+'"]')?.setAttribute('aria-pressed','true');
+ }
+};
+$('undo').onclick=()=>{if(state.history.length){cancelSpeech();audioPlayer.chime('undo');state.positions=state.history.pop();state.selected=null;render();}};
+$('mute').onclick=()=>{muted=!muted;cancelSpeech();audioPlayer.setMuted(muted);$('mute').textContent=muted?'🔇 Som desligado':'🔊 Som ligado';$('mute').setAttribute('aria-pressed',String(muted));$('audioStatus').hidden=muted;};
+document.addEventListener('visibilitychange',()=>{
+ if(document.hidden){
+  cancelSpeech();
+  if(state.scene==='travel'){clearTimeout(travelTimer);travelTimer=null;audioWarning('Passeio pausado. Ao voltar, toque em Ouvir a Lia para chegar à ilha.');}
+ }
+});
+window.addEventListener('pagehide',()=>stopScene());
+window.LiaActivity={dispose:()=>{stopScene();audioPlayer.dispose();}};
+reset();
+})();
+</script></html>

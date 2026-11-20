@@ -1,0 +1,244 @@
+<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Trilha das Cores</title><style>
+*{box-sizing:border-box}body{margin:0;color:#183b37;background:#e5efdf;font:16px system-ui}main{max-width:620px;margin:auto;padding:20px}header,nav,.row{display:flex;align-items:center;justify-content:space-between;gap:8px}h1{font-family:Georgia;font-size:clamp(29px,7vw,46px);margin:0}button{border:0;border-radius:12px;padding:10px;background:#fff7df;color:inherit;font:inherit;font-weight:bold;cursor:pointer;min-height:44px}button:disabled{opacity:.4}button:focus-visible{outline:3px solid #13494e}article{background:#fffaf0;border-radius:25px;padding:16px;margin:18px 0;box-shadow:0 6px 0 #c4d6bc}h2,p{margin:8px 0}canvas{display:block;width:100%;height:auto;background:#d5e9df;border-radius:16px;margin:12px 0}#teams{display:flex;flex-wrap:wrap;gap:8px}#teams button{flex:1;border-bottom:5px solid var(--color)}progress{width:100%;accent-color:#30766a}dialog{border:0;border-radius:20px;background:#fffaf0;color:inherit;max-width:90vw}dialog::backdrop{background:#173e38a0}label{display:block;padding:12px 0}#albumList{display:grid;gap:10px;margin:12px 0}.foot{color:#385d50}nav{flex-wrap:wrap;justify-content:flex-start}
+@media(max-width:440px){main{padding:12px}article{padding:12px}header h1{font-size:clamp(24px,7vw,32px)}#teams{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#teams button{min-height:52px;font-size:14px}}
+#celebration{margin:16px 0 0;padding:16px;border-radius:16px;background:#ffe09a;color:#263c30;font-size:clamp(18px,5vw,24px);font-weight:800;text-align:center}
+</style><main><header><h1>Trilha das Cores</h1><button id="mute" aria-label="Silenciar">🔊</button><button id="settings" aria-label="Configurações">⚙️</button></header><div id="celebration" role="status" aria-live="polite" hidden></div><article><div class="row"><h2 id="title"></h2><button id="album">Álbum</button></div><canvas id="board" width="480" height="320" role="img"></canvas><progress id="progress" value="0" aria-label="Progresso da fase"></progress><p id="status" role="status">Se o tabuleiro ficar vazio, abra este arquivo diretamente no Chrome, Edge ou Safari.</p><div id="teams"></div></article><nav><button id="undo">Desfazer</button><button id="reset">Recomeçar</button><button id="next" hidden>Próximo desenho →</button></nav><p class="foot">Escolha uma cor. As formigas levam os pixels que conseguem alcançar.</p></main><dialog id="prefs"><h2>Som</h2><label><input type="checkbox" id="effects"> Efeitos</label><label><input type="checkbox" id="music"> Música</label><button type="button" id="clearProgress">Zerar progresso</button><form method="dialog"><button>Voltar ao jogo</button></form></dialog><dialog id="gallery"><h2>Álbum de Búzios</h2><div id="albumList"></div><form method="dialog"><button>Voltar ao jogo</button></form></dialog><script>
+(() => {
+const $=id=>document.getElementById(id);
+const colors={b:['Azul','#3298b6'],y:['Amarelo','#eeaf3a'],r:['Coral','#d96856'],g:['Verde','#589450'],w:['Creme','#e4cc92']};
+const levels=[
+['Barquinho',['.....y.....','....yy.....','...yyy.b...','..yyyy.bb..','.yyyyy.bbb.','.....w.....','.rrrrrrrrr.','..rrrrrrr..','...rrrrr...','bbbbbbbbbbb']],
+['Tartaruga',['........gg.','.......gggg','..gggggggg.','.ggyyyygg..','ggyyyyyygg.','ggyyyryygg.','ggyyyryygg.','.ggyyyygg..','..gggggg...','.gg....gg..']],
+['Farol',['....yyy....','...yyyyy...','...rwwwr...','...rwywr...','...rwwwr...','....rrr....','....rwr....','....rwr....','...rrrrr...','bbbbbbbbbbb']]
+];
+Object.assign(colors,{
+  n:['Preto','#292a32'],t:['Turquesa','#31a999'],p:['Rosa','#e585a8'],
+  o:['Laranja','#f18a42'],v:['Violeta','#7655ab'],d:['Marinho','#285279'],
+  l:['Oliva','#89983d'],m:['Vinho','#963f59'],s:['Areia','#c29366'],
+  i:['Gelo','#c0e1e9'],h:['Marrom','#76513f']
+});
+const names=[
+  ['Barquinho','Tartaruga','Farol'],
+  ['Veleiro','Peixe tropical','Casa da praia','Concha','Canoa','Estrela-do-mar'],
+  ['Barco de pesca','Tartaruga-verde','Farol ao pôr do sol','Baleia','Igrejinha','Cavalo-marinho','Joaninha','Amanhecer no cais','Caranguejo','Borboleta','Ilha dos morros','Gaivota']
+];
+const icons=[
+  [],
+  ['⛵','🐠','🏠','🐚','🛶','⭐'],
+  ['🚤','🐢','🌅','🐋','⛪','🐴','🐞','⚓','🦀','🦋','🏝️','🕊️']
+];
+const originals=levels.splice(0);
+const palette=Object.keys(colors);
+names.forEach((chapter,tier)=>chapter.forEach((name,index)=>{
+  levels.push({name,tier,index,rows:tier===0?originals[index][1]:null,icon:icons[tier][index]});
+}));
+function read(key,fallback){try{return JSON.parse(localStorage.getItem(key))??fallback}catch{return fallback}}
+function save(key,value){try{localStorage.setItem(key,JSON.stringify(value))}catch{}}
+let prefs=read('trilha-som',{effects:true,music:false,mute:false}), wins=read('trilha-campanha',[]), level=0, cells=[], history=[], waiting=[], busy=false,total=0, order=[], offered=[], grid=22, size=8, left=152, top=34;
+const ctx=$('board').getContext('2d');
+const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+let audio,timer;
+function note(freq,duration,volume){try{audio??=new AudioContext();audio.resume().catch(()=>{});const o=audio.createOscillator(),g=audio.createGain();o.frequency.value=freq;g.gain.setValueAtTime(volume,audio.currentTime);g.gain.exponentialRampToValueAtTime(.0001,audio.currentTime+duration);o.connect(g);g.connect(audio.destination);o.start();o.stop(audio.currentTime+duration)}catch{}}
+function sound(freq){if(prefs.effects&&!prefs.mute)note(freq,.17,.04)}
+function soundSettings(){clearInterval(timer);$('effects').checked=prefs.effects;$('music').checked=prefs.music;$('mute').textContent=prefs.mute?'🔇':'🔊';$('mute').setAttribute('aria-label',prefs.mute?'Ativar som':'Silenciar');$('mute').setAttribute('aria-pressed',prefs.mute);save('trilha-som',prefs);if(prefs.music&&!prefs.mute){let i=0;const play=()=>note([262,330,392,330,294,349,440,349][i++%8],.7,.015);play();timer=setInterval(play,680)}}
+for(const key of ['effects','music'])$(key).onchange=()=>{prefs[key]=$(key).checked;soundSettings()};
+$('mute').onclick=()=>{prefs.mute=!prefs.mute;soundSettings()};$('settings').onclick=()=>$('prefs').showModal();
+function draw(list=cells,ants=[]){
+  const sky=ctx.createLinearGradient(0,0,0,180);
+  sky.addColorStop(0,'#8fc9d9');sky.addColorStop(1,'#f9e8c3');
+  ctx.fillStyle=sky;ctx.fillRect(0,0,480,320);
+  ctx.fillStyle='#fff0c8';ctx.beginPath();ctx.arc(396,48,24,0,Math.PI*2);ctx.fill();
+  function silhouette(color,points){
+    ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(0,points[0]);
+    for(let i=1;i<points.length;i++)ctx.lineTo(i*480/(points.length-1),points[i]);
+    ctx.lineTo(480,220);ctx.lineTo(0,220);ctx.fill();
+  }
+  silhouette('#80a6a3',[130,108,117,88,71,91,124,120,94,106,135]);
+  silhouette('#537f73',[128,119,138,156,165,163,157,134,121,124,142]);
+  const sea=ctx.createLinearGradient(0,155,0,284);
+  sea.addColorStop(0,'#5ba9ae');sea.addColorStop(1,'#a8d8c9');
+  ctx.fillStyle=sea;ctx.beginPath();ctx.moveTo(0,166);ctx.bezierCurveTo(160,149,348,174,480,151);ctx.lineTo(480,293);ctx.lineTo(0,293);ctx.fill();
+  ctx.strokeStyle='#e8fbdf88';ctx.lineWidth=1.5;
+  for(let i=0;i<23;i++){
+    const x=(i*71)%470,y=177+(i*23)%90;
+    ctx.beginPath();ctx.moveTo(x,y);ctx.quadraticCurveTo(x+13,y-2,x+27,y);ctx.stroke();
+  }
+  ctx.fillStyle='#f2d6a3';ctx.beginPath();ctx.moveTo(0,266);ctx.bezierCurveTo(138,294,302,250,480,272);ctx.lineTo(480,320);ctx.lineTo(0,320);ctx.fill();
+  for(let i=0;i<68;i++){
+    ctx.fillStyle=i%3?'#c69a633b':'#fff1c4';
+    ctx.fillRect((i*83)%480,291+(i*11)%29,2+i%3,1);
+  }
+  for(const {x,y,c} of list){
+    const px=left+x*size,py=top+y*size;
+    ctx.fillStyle=colors[c][1];ctx.fillRect(px,py,size-.65,size-.65);
+    if(size>5){ctx.fillStyle='#ffffff26';ctx.fillRect(px+.6,py+.6,size-1.8,1);}
+  }
+  ctx.fillStyle='#b88b59';ctx.beginPath();ctx.ellipse(240,298,34,15,0,0,7);ctx.fill();
+  ctx.fillStyle='#e0b27b';ctx.beginPath();ctx.ellipse(240,294,22,9,0,0,7);ctx.fill();
+  ctx.fillStyle='#483425';ctx.beginPath();ctx.ellipse(240,291,10,5.5,0,0,7);ctx.fill();
+  for(const ant of ants)drawAnt(ant);
+}
+function drawAnt({x,y,c,loaded,heading,step}){
+  ctx.save();ctx.translate(x,y);ctx.rotate(heading);
+  ctx.strokeStyle='#413127';ctx.lineWidth=1.05;ctx.lineCap='round';
+  for(const side of [-1,1]){
+    for(let leg=0;leg<3;leg++){
+      const root=-3+leg*2.5;
+      const swing=Math.sin(step+leg*Math.PI+side*Math.PI/2)*2;
+      ctx.beginPath();ctx.moveTo(root,side);
+      ctx.lineTo(root+(leg-1)*2,side*4);
+      ctx.lineTo(root+(leg-1)*4+swing,side*7);ctx.stroke();
+    }
+    ctx.beginPath();ctx.moveTo(5,side);ctx.lineTo(8,side*2.5);
+    ctx.lineTo(10,side*(4+Math.sin(step*.55)*.75));ctx.stroke();
+  }
+  for(const [offset,rx,ry,tone] of [[-5,4.6,3.1,'#432d24'],[0,2.6,2.2,'#634639'],[4,2.8,2.35,'#4b342a']]){
+    ctx.fillStyle=tone;ctx.beginPath();ctx.ellipse(offset,0,rx,ry,0,0,7);ctx.fill();
+  }
+  ctx.fillStyle='#a57b61';ctx.fillRect(-7,-1.8,3,1);
+  if(loaded){
+    ctx.fillStyle=colors[c][1];ctx.fillRect(-7,-4,6,6);
+    ctx.fillStyle='#ffffff65';ctx.fillRect(-7,-4,6,1.5);
+  }
+  ctx.restore();
+}
+function accessible(){const occupied=new Set(cells.map(p=>p.x+','+p.y));const outside=new Set(['-1,-1']), queue=[[-1,-1]];const dirs=[[1,0],[-1,0],[0,1],[0,-1]];for(const [x,y] of queue)for(const [dx,dy] of dirs){const a=x+dx,b=y+dy,k=a+','+b;if(a>=-1&&a<=grid&&b>=-1&&b<=grid&&!outside.has(k)&&!occupied.has(k)){outside.add(k);queue.push([a,b])}}return cells.filter(p=>dirs.some(([dx,dy])=>outside.has((p.x+dx)+','+(p.y+dy))))}
+function closest(r,g,b,keys){
+  let best=Infinity,selected=keys[0];
+  for(const key of keys){
+    const hex=Number.parseInt(colors[key][1].slice(1),16);
+    const distance=(r-(hex>>16))**2+(g-((hex>>8)&255))**2+(b-(hex&255))**2;
+    if(distance<best){best=distance;selected=key;}
+  }
+  return selected;
+}
+function picture(i){
+  const {tier,rows,icon,index}=levels[i];
+  const keys=palette.slice(0,[5,10,16][tier]);
+  if(rows)return rows.flatMap((row,y)=>[...row].flatMap((c,x)=>c==='.'?[]:
+    [0,1].flatMap(dy=>[0,1].map(dx=>({x:x*2+dx,y:y*2+dy,c})))));
+  const art=document.createElement('canvas');
+  art.width=128;art.height=128;
+  const brush=art.getContext('2d');
+  brush.font='96px "Segoe UI Emoji","Apple Color Emoji",sans-serif';
+  brush.textAlign='center';brush.textBaseline='middle';brush.fillText(icon,64,66);
+  const raster=document.createElement('canvas');
+  raster.width=grid;raster.height=grid;
+  const sample=raster.getContext('2d');
+  sample.drawImage(art,0,0,grid,grid);
+  const data=sample.getImageData(0,0,grid,grid).data, result=[];
+  const alpha=(x,y)=>x<0||y<0||x>=grid||y>=grid?0:data[(y*grid+x)*4+3];
+  for(let y=0;y<grid;y++)for(let x=0;x<grid;x++){
+    const offset=(y*grid+x)*4;
+    if(data[offset+3]<85)continue;
+    const edge=[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>alpha(x+dx,y+dy)<85);
+    const c=tier===2&&edge&&(x+2*y+index)%7<4?'n':closest(data[offset],data[offset+1],data[offset+2],keys);
+    result.push({x,y,c});
+  }
+  return result;
+}
+function remaining(c){return cells.filter(p=>p.c===c).length}
+function offer(){
+  const free=new Set(accessible().map(p=>p.c));
+  offered=offered.filter(c=>remaining(c)&&!waiting.includes(c));
+  const available=order.filter(c=>remaining(c)&&!waiting.includes(c));
+  for(const c of available)if(offered.length<3&&!offered.includes(c))offered.push(c);
+  if(!offered.some(c=>free.has(c))){
+    const open=available.find(c=>free.has(c));
+    if(open)offered=[open,...offered].slice(0,3);
+  }
+}
+function update(message){
+  const {name,tier,index}=levels[level];
+  $('title').textContent=name;
+  $('board').setAttribute('aria-label','Tabuleiro: '+name);
+  $('progress').max=total;$('progress').value=total-cells.length;
+  const progress='Fase '+(tier+1)+' · Desenho '+(index+1)+' de '+names[tier].length;
+  $('status').textContent=progress+' — '+(message??(!cells.length?'Quadro completo! Guardado no álbum.':tier===0?'Escolha uma equipe.':'Espera: '+waiting.length+' de 2 espaços'));
+  $('undo').disabled=busy||!history.length;$('reset').disabled=busy;
+  $('next').hidden=busy||cells.length>0||level===levels.length-1;$('album').disabled=busy;$('clearProgress').disabled=busy;
+  const free=accessible();
+  $('teams').replaceChildren();
+  for(const c of [...offered,...waiting]){
+    const count=remaining(c);
+    if(!count)continue;
+    const b=document.createElement('button');b.style.setProperty('--color',colors[c][1]);
+    b.textContent=colors[c][0]+' · '+count+(count===1?' formiga':' formigas')+(waiting.includes(c)?' · espera':'');
+    b.disabled=busy||waiting.includes(c)||(waiting.length>=2&&!free.some(p=>p.c===c));
+    b.onclick=()=>move(c);$('teams').append(b);
+  }
+}
+let advanceTimer, celebrationTimer;
+$('clearProgress').onclick=()=>{
+  if(busy||!window.confirm('Apagar o progresso e voltar ao primeiro desenho?'))return;
+  wins=[];
+  save('trilha-campanha',wins);
+  clearTimeout(celebrationTimer);
+  $('celebration').hidden=true;
+  $('prefs').close();
+  start(0);
+};
+function announce(message, duration){
+  const banner=$('celebration');
+  clearTimeout(celebrationTimer);
+  banner.textContent=message;
+  banner.hidden=false;
+  if(duration)celebrationTimer=setTimeout(()=>{banner.hidden=true;},duration);
+}
+function celebrate(){
+  const next=levels[level+1];
+  const finishedChapter=!next||next.tier!==levels[level].tier;
+  if(!next){
+    update();
+    announce('Parabéns, Giovana! Você completou todas as fases!');
+    return;
+  }
+  if(finishedChapter)announce('Parabéns, Giovana! Você acaba de passar para a próxima fase!',15000);
+  update('Desenho completo! Preparando o próximo…');
+  advanceTimer=setTimeout(()=>start(level+1),finishedChapter?4000:2000);
+}
+function start(i){
+  clearTimeout(advanceTimer);
+  level=i;grid=[22,32,44][levels[i].tier];size=218/grid;left=131;top=35;
+  cells=picture(i);total=cells.length;waiting=[];history=[];offered=[];
+  order=[...new Set(cells.map(p=>p.c))];
+  for(let j=order.length-1;j>0;j--){const k=Math.floor(Math.random()*(j+1));[order[j],order[k]]=[order[k],order[j]];}
+  offer();update();draw();
+}
+function animate(group){
+  if(reduced)return Promise.resolve();
+  return new Promise(resolve=>{
+    let started;
+    function frame(t){
+      started??=t;
+      const elapsed=t-started, ants=[], uncollected=[];
+      let active=false;
+      group.forEach((pixel,i)=>{
+        const {x,y,c}=pixel;
+        const targetX=left+x*size+size/2,targetY=top+y*size+size/2;
+        const distance=Math.hypot(targetX-240,targetY-291);
+        const walk=distance/0.085, pickup=220;
+        const age=elapsed-i*Math.min(110,1100/group.length);
+        if(age<walk)uncollected.push(pixel);
+        if(age>=2*walk+pickup)return;
+        active=true;
+        if(age<0)return;
+        const loaded=age>=walk;
+        const fraction=loaded?1-Math.max(0,(age-walk-pickup)/walk):age/walk;
+        ants.push({x:240+(targetX-240)*fraction,y:291+(targetY-291)*fraction,c,loaded,heading:Math.atan2(targetY-291,targetX-240)+(loaded?Math.PI:0),step:age/42+i});
+      });
+      draw([...cells,...uncollected],ants);
+      if(active)requestAnimationFrame(frame);else resolve();
+    }
+    requestAnimationFrame(frame);
+  });
+}
+async function collect(c){let group;while((group=accessible().filter(p=>p.c===c)).length){const taken=new Set(group);cells=cells.filter(p=>!taken.has(p));await animate(group);sound(420+(total-cells.length)*4)}}
+async function move(c){if(busy)return;const open=accessible().some(p=>p.c===c);if(!open&&waiting.length===2)return;history.push({cells:[...cells],waiting:[...waiting],offered:[...offered]});busy=true;if(!open)waiting.push(c);offered=offered.filter(color=>color!==c);update(open?'Formigas na trilha…':colors[c][0]+' na espera.');if(open){await collect(c);let ready;while((ready=waiting.find(k=>accessible().some(p=>p.c===k)))){waiting=waiting.filter(k=>k!==ready);await collect(ready)}}busy=false;if(!cells.length){if(!wins.includes(level)){wins.push(level);save('trilha-campanha',wins)}sound(790);draw(picture(level))}else draw();offer();if(!cells.length)celebrate();else update(!open?colors[c][0]+' na espera · '+waiting.length+' de 2 espaços':undefined)}
+$('undo').onclick=()=>{const prior=history.pop();if(prior){clearTimeout(advanceTimer);({cells,waiting,offered}=prior);update();draw()}};$('reset').onclick=()=>start(level);$('next').onclick=()=>start(level+1);
+$('album').onclick=()=>{clearTimeout(advanceTimer);const list=$('albumList');list.replaceChildren();levels.forEach(({name,tier},i)=>{const b=document.createElement('button');b.textContent=(wins.includes(i)?'✓ ':'')+name+' · Fase '+(tier+1);b.disabled=i>0&&!wins.includes(i-1);b.onclick=()=>{$('gallery').close();start(i)};list.append(b)});$('gallery').showModal()};soundSettings();start(Math.max(0,levels.findIndex((_,i)=>!wins.includes(i))));
+
+})();
+</script></html>
+
+

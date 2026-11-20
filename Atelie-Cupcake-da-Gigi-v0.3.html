@@ -1,0 +1,973 @@
+<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Cupcake Confeitado da Gigi · Ateliê v0.3</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f4e8d9;color:#453c38;font:17px system-ui}main{max-width:760px;margin:auto;padding:16px}header,.row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}h1{font:clamp(30px,7vw,46px) Georgia;margin:8px 0}h2{font:27px Georgia;margin:4px 0}canvas{width:100%;display:block;border-radius:24px;background:#c9e7dd}section{margin:16px 0;border-radius:24px;background:#fffaf1;padding:18px;box-shadow:0 5px #ddc7ab}button{font:700 16px system-ui;color:inherit;border:0;border-radius:13px;background:#f7dfa9;padding:12px;min-height:48px;cursor:pointer}button:disabled{opacity:.4;cursor:default}button:focus-visible{outline:3px solid #25766b;outline-offset:3px}button[aria-pressed=true]{outline:3px solid #bf615b}.buttons{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin:12px 0}.primary{background:#26776c;color:white}#caption,#status{line-height:1.45}#status{min-height:25px}#recipe{background:#eee8d7;border-radius:14px;padding:14px;text-align:center;font-size:21px}#items button{font-size:26px;min-width:56px}#audioError{background:#f8dbaf;padding:10px;border-radius:10px}small{font-size:13px}label{display:block;padding:8px 0}[hidden]{display:none!important}@media(max-width:390px){main{padding:10px}section{padding:12px}.buttons{gap:7px}}
+</style><main><header><h1>Cupcake Confeitado da Gigi</h1><button id="restart">↻ Recomeçar</button></header>
+<p><small>Ateliê de Delícias · Receita de faz de conta para dois bichinhos</small></p>
+<canvas id="art" width="720" height="430" role="img" aria-label="Bancada com tigela, forno e cupcakes decorados"></canvas>
+<section><div class="row"><h2 id="title"></h2><button id="listen">🔊 Ouvir a Lia</button></div>
+<p id="caption"></p><p id="audioError" role="status" hidden></p>
+<div id="choices" class="buttons"></div><div id="recipe"></div><div id="ingredients" class="buttons"></div><div id="items" class="buttons"></div>
+<p id="status" role="status"></p><div class="buttons"><button id="undo">↩ Desfazer</button><button id="next" class="primary"></button></div>
+<details><summary>Som e movimento</summary><button id="mute">🔊 Som ligado</button><label><input type="checkbox" id="effects" checked> Efeitos sonoros</label><label><input id="reduce" type="checkbox"> Movimento reduzido</label></details>
+</section></main><script>
+/*!
+ * gigi-audio-hub.js — Motor Único Consolidado de Voz & Efeitos Procedurais (v0.3)
+ * Consolida a escolha de voz de Alexandre (L0: Google português do Brasil, rate 1.05, pitch 1.14, pausa 170ms)
+ * com os efeitos procedurais do Cupcake (batedeira, confeitos, velinha por toque) e Formiguinhas,
+ * atendendo integralmente aos critérios de engenharia e revisão do Atlas (9c89ac7f / 801373f1):
+ *  1. Voz SFX = evento audível completo (com voiceGain próprio conectado ao masterSfxGain), orçamento máx. 3 eventos simultâneos.
+ *  2. Rampa curta anti-clique (10ms) no voice-stealing; descarte imediato e desconexão em dispose().
+ *  3. Eventos compostos (confeitos/marcha) agendados por fila de timers controlados: entram no orçamento ao disparar e são limpos por stopSfx/mudo/aba oculta/dispose.
+ *  4. Cooldown de 140ms instrumentado com relógio injetável (opts.now) para testes determinísticos de rajada.
+ *  5. speak() cancela apenas a fala anterior (stopSpeech), preservando efeitos SFX recém-iniciados; controles separados setMuted e setSfxMuted.
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.GigiAudio = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var MALE_HINTS = /(daniel|felipe|ant[oô]nio|nicolau|humberto|\bmale\b|masculin)/i;
+
+  var PENTATONIC_ANTS = {
+    red:    587.33, // Ré5
+    yellow: 659.25, // Mi5
+    green:  739.99, // Fá#5
+    blue:   880.00, // Lá5
+    purple: 987.77, // Si5
+    gold:  1174.66  // Ré6
+  };
+
+  function scoreVoice(v, targetLang) {
+    var name = (v && v.name) || '';
+    var lang = (v && v.lang) || '';
+    var prefix = (targetLang || 'pt-BR').slice(0, 2).toLowerCase();
+    if (lang.toLowerCase().indexOf(prefix) !== 0) return -1;
+    var score = lang.toLowerCase() === (targetLang || 'pt-BR').toLowerCase() ? 40 : 22;
+
+    if (MALE_HINTS.test(name)) return 5;
+    if (/desktop/i.test(name)) score -= 25;
+
+    if (/google\s+portugu[eê]s(\s+do\s+brasil)?/i.test(name)) score += 80; // 120 pts
+    else if (/(thalita|giovanna|let[ií]cia|yara|leila|ana|jenny|aria)/i.test(name)) score += 65; // 105 pts
+    else if (/francisca/i.test(name)) score += 60; // 100 pts
+    else if (/(natural|neural|online)/i.test(name)) score += 55; // 95 pts
+    else if (/(enhanced|premium|siri)/i.test(name)) score += 48; // 88 pts
+    else if (/google/i.test(name)) score += 42; // 82 pts
+    else if (/(luciana|vit[oó]ria|camila|raquel|helo[ií]sa|fernanda|samantha)/i.test(name)) score += 32; // 72 pts
+    else if (/maria/i.test(name)) score += 5;
+
+    return score;
+  }
+
+  function splitExpressiveChunks(input, baseRate, basePitch, basePauseMs) {
+    if (Array.isArray(input)) return input;
+    var text = String(input || '').trim();
+    if (!text) return [];
+    var r0 = baseRate != null ? baseRate : 1.05;
+    var p0 = basePitch != null ? basePitch : 1.14;
+    var pause0 = basePauseMs != null ? basePauseMs : 170;
+
+    var parts = text.split(/(\[en:[^\]]+\])/gi);
+    var chunks = [];
+
+    parts.forEach(function (part) {
+      if (!part || !part.trim()) return;
+      var mEn = part.match(/^\[en:\s*([^\]]+)\]$/i);
+      if (mEn) {
+        chunks.push({ text: mEn[1].trim(), lang: 'en-US', rate: 1.00, pitch: 1.12, pause: pause0 });
+        return;
+      }
+      var sentences = part.match(/[^!?.]+[!?.\u2026]+|[^!?.]+$/g) || [part];
+      sentences.forEach(function (s, idx) {
+        var clean = s.trim();
+        if (!clean) return;
+        var isExclam = /!$/.test(clean);
+        var isQuest = /\?$/.test(clean);
+        var r = isExclam ? Math.min(1.06, r0 + 0.01) : (isQuest ? Math.max(1.03, r0 - 0.02) : r0);
+        var p = isExclam ? Math.min(1.15, p0 + 0.01) : (isQuest ? Math.min(1.15, p0 + 0.01) : p0);
+        chunks.push({
+          text: clean,
+          lang: 'pt-BR',
+          rate: Number(r.toFixed(2)),
+          pitch: Number(p.toFixed(2)),
+          pause: idx === sentences.length - 1 ? 100 : pause0
+        });
+      });
+    });
+
+    return chunks;
+  }
+
+  function create(opts) {
+    opts = opts || {};
+    var win = opts.window || (typeof window !== 'undefined' ? window : {});
+    var doc = opts.document || (typeof document !== 'undefined' ? document : null);
+    var nowFn = opts.now || function () { return Date.now(); };
+
+    var cfg = {
+      lang: opts.lang || 'pt-BR',
+      rate: opts.rate != null ? opts.rate : 1.05,
+      pitch: opts.pitch != null ? opts.pitch : 1.14,
+      pauseMs: opts.pauseMs != null ? opts.pauseMs : 170,
+      volume: opts.volume != null ? opts.volume : 1,
+      maxSpeakMs: opts.maxSpeakMs || 15000,
+      maxPolyphony: opts.maxPolyphony != null ? opts.maxPolyphony : 3,
+      cooldownMs: opts.cooldownMs != null ? opts.cooldownMs : 140,
+      fadeRampSec: opts.fadeRampSec != null ? opts.fadeRampSec : 0.010, // Rampa curta 10ms anti-clique
+      expressiveProsody: opts.expressiveProsody !== false,
+      onCaption: opts.onCaption || function () {},
+      onDiagnostics: opts.onDiagnostics || opts.onState || function () {},
+      onState: opts.onState || opts.onDiagnostics || function () {},
+      onProblem: opts.onProblem || function () {}
+    };
+
+    var state = {
+      unlocked: false,
+      muted: !!opts.muted,
+      sfxMuted: !!opts.sfxMuted,
+      disposed: false,
+      ctx: null,
+      masterSfxGain: null,
+      voice: null,
+      enVoice: null,
+      voicesChecked: false,
+      clips: {},
+      currentAudio: null,
+      activeUtterance: null,
+      activeVoices: [],     // Lista de eventos SFX audíveis completos em curso (máx cfg.maxPolyphony)
+      sfxTimers: [],        // Timers de grãos/eventos futuros agendados
+      lastSfxAtByKey: {},   // Relógio de cooldown por categoria de evento
+      voiceSeq: 0,
+      stolenCount: 0,
+      cooldownDrops: 0,
+      peakActiveVoices: 0,
+      speakToken: 0,
+      watchdog: null,
+      chunkTimer: null,
+      lastMode: 'none',
+      lastError: null
+    };
+
+    var synth = win.speechSynthesis || null;
+    var Utter = win.SpeechSynthesisUtterance || null;
+    var AC = win.AudioContext || win.webkitAudioContext || null;
+
+    function emit() {
+      var d = getDiagnostics();
+      try { cfg.onState(d); } catch (e) {}
+      if (cfg.onDiagnostics !== cfg.onState) {
+        try { cfg.onDiagnostics(d); } catch (e) {}
+      }
+    }
+
+    function reportProblem(reason) {
+      state.lastError = reason;
+      emit();
+      try { cfg.onProblem(reason, getDiagnostics()); } catch (e) {}
+    }
+
+    function pickBestVoice(targetLang) {
+      if (!synth || !synth.getVoices) return null;
+      var voices = synth.getVoices() || [];
+      state.voicesChecked = true;
+      var scored = voices
+        .map(function (v) { return { v: v, s: scoreVoice(v, targetLang) }; })
+        .filter(function (x) { return x.s >= 0; })
+        .sort(function (a, b) { return b.s - a.s; });
+      return scored.length ? scored[0].v : null;
+    }
+
+    function refreshVoice() {
+      state.voice = pickBestVoice(cfg.lang);
+      state.enVoice = pickBestVoice('en-US');
+      emit();
+    }
+
+    if (synth) {
+      refreshVoice();
+      if (typeof synth.addEventListener === 'function') synth.addEventListener('voiceschanged', refreshVoice);
+      else if ('onvoiceschanged' in synth) synth.onvoiceschanged = refreshVoice;
+    }
+
+    function ensureMasterCtx() {
+      if (!AC) return null;
+      if (!state.ctx) {
+        state.ctx = new AC();
+      }
+      resumeCtx();
+      if (!state.masterSfxGain && state.ctx.createGain) {
+        state.masterSfxGain = state.ctx.createGain();
+        if (state.masterSfxGain.gain && state.masterSfxGain.gain.setValueAtTime) {
+          state.masterSfxGain.gain.setValueAtTime(0.85 * cfg.volume, state.ctx.currentTime || 0);
+        }
+        state.masterSfxGain.connect(state.ctx.destination);
+      }
+      return state.ctx;
+    }
+
+    function unlock() {
+      if (state.disposed) return false;
+      if (state.unlocked) { resumeCtx(); return true; }
+      try {
+        var c = ensureMasterCtx();
+        if (c && c.createBuffer) {
+          var b = c.createBuffer(1, 1, 22050);
+          var s = c.createBufferSource();
+          s.buffer = b; s.connect(c.destination);
+          if (s.start) s.start(0); else if (s.noteOn) s.noteOn(0);
+        }
+        state.unlocked = true;
+      } catch (e) { state.lastError = String(e && e.message || e); }
+      emit();
+      return state.unlocked;
+    }
+
+    function resumeCtx() {
+      try { if (state.ctx && state.ctx.state === 'suspended') state.ctx.resume(); } catch (e) {}
+    }
+
+    /**
+     * Finaliza uma voz SFX específica.
+     * - Se immediate === true (ex.: dispose/stopSfx), cancela agendamentos, zera ganho e desconecta na hora.
+     * - Se immediate === false (ex.: voice-stealing por limite de polifonia), aplica rampa curta de 10ms anti-clique.
+     */
+    function terminateVoice(vObj, immediate) {
+      if (!vObj || vObj.ended) return;
+      vObj.ended = true;
+      if (vObj.cleanupTimer) {
+        clearTimeout(vObj.cleanupTimer);
+        vObj.cleanupTimer = null;
+      }
+      var idx = state.activeVoices.indexOf(vObj);
+      if (idx >= 0) state.activeVoices.splice(idx, 1);
+
+      var c = state.ctx;
+      var nowT = (c && c.currentTime) || 0;
+      var vg = vObj.voiceGain;
+
+      if (!immediate && c && vg && vg.gain && vg.gain.linearRampToValueAtTime) {
+        try {
+          if (vg.gain.cancelScheduledValues) vg.gain.cancelScheduledValues(nowT);
+          var curVal = typeof vg.gain.value === 'number' ? Math.max(0.0001, vg.gain.value) : 0.08;
+          if (vg.gain.setValueAtTime) vg.gain.setValueAtTime(curVal, nowT);
+          vg.gain.linearRampToValueAtTime(0.0001, nowT + cfg.fadeRampSec);
+        } catch (e) {}
+        vObj.sources.forEach(function (src) {
+          try { if (src.stop) src.stop(nowT + cfg.fadeRampSec + 0.002); } catch (e) {}
+        });
+        return;
+      }
+
+      // Descarte imediato
+      if (vg && vg.gain) {
+        try {
+          if (vg.gain.cancelScheduledValues) vg.gain.cancelScheduledValues(nowT);
+          if (vg.gain.setValueAtTime) vg.gain.setValueAtTime(0, nowT);
+        } catch (e) {}
+      }
+      vObj.sources.forEach(function (src) {
+        try { if (src.stop) src.stop(0); } catch (e) {}
+        try { if (src.disconnect) src.disconnect(); } catch (e) {}
+      });
+      if (vg && vg.disconnect) {
+        try { vg.disconnect(); } catch (e) {}
+      }
+    }
+
+    function stopSfx() {
+      while (state.sfxTimers.length) {
+        clearTimeout(state.sfxTimers.pop());
+      }
+      var copy = state.activeVoices.slice();
+      copy.forEach(function (vObj) { terminateVoice(vObj, true); });
+      state.activeVoices.length = 0;
+    }
+
+    function stopSpeech() {
+      state.speakToken++;
+      if (state.watchdog) { clearTimeout(state.watchdog); state.watchdog = null; }
+      if (state.chunkTimer) { clearTimeout(state.chunkTimer); state.chunkTimer = null; }
+      if (state.activeUtterance) {
+        state.activeUtterance.onend = null;
+        state.activeUtterance.onerror = null;
+        state.activeUtterance = null;
+      }
+      try { if (synth) synth.cancel(); } catch (e) {}
+      if (state.currentAudio) {
+        try { state.currentAudio.pause(); } catch (e) {}
+        state.currentAudio = null;
+      }
+    }
+
+    function stopAll() {
+      stopSpeech();
+      stopSfx();
+      emit();
+    }
+
+    /**
+     * Aloca um evento audível completo (SfxVoice) respeitando:
+     * - estado unlocked / muted / sfxMuted / disposed
+     * - cooldown por chave (skipCooldown=true apenas para sub-grãos internos espaçados)
+     * - orçamento máximo de polifonia (cfg.maxPolyphony = 3), aplicando rampa anti-clique na voz mais antiga se cheio
+     */
+    function allocateSfxVoice(kind, durationMs, skipCooldown) {
+      if (state.disposed || state.muted || state.sfxMuted || !state.unlocked) return null;
+      var c = ensureMasterCtx();
+      if (!c || !c.createGain) return null;
+
+      var nowMs = nowFn();
+      if (!skipCooldown && cfg.cooldownMs > 0) {
+        var lastAt = state.lastSfxAtByKey[kind];
+        if (lastAt != null && (nowMs - lastAt) < cfg.cooldownMs) {
+          state.cooldownDrops++;
+          return null;
+        }
+        state.lastSfxAtByKey[kind] = nowMs;
+      }
+
+      while (state.activeVoices.length >= cfg.maxPolyphony) {
+        var oldest = state.activeVoices[0];
+        state.stolenCount++;
+        terminateVoice(oldest, false); // Rampa curta 10ms anti-clique
+      }
+
+      var vg = c.createGain();
+      var dest = state.masterSfxGain || c.destination;
+      vg.connect(dest);
+
+      var vObj = {
+        id: ++state.voiceSeq,
+        kind: kind,
+        voiceGain: vg,
+        sources: [],
+        ended: false,
+        cleanupTimer: null
+      };
+
+      state.activeVoices.push(vObj);
+      if (state.activeVoices.length > state.peakActiveVoices) {
+        state.peakActiveVoices = state.activeVoices.length;
+      }
+
+      var ttl = Math.max(40, Math.ceil(durationMs || 250) + 30);
+      vObj.cleanupTimer = setTimeout(function () {
+        if (vObj.ended) return;
+        vObj.ended = true;
+        var i = state.activeVoices.indexOf(vObj);
+        if (i >= 0) state.activeVoices.splice(i, 1);
+        try { if (vg.disconnect) vg.disconnect(); } catch (e) {}
+      }, ttl);
+
+      return vObj;
+    }
+
+    function scheduleSfx(delayMs, fn) {
+      if (state.disposed || state.muted || state.sfxMuted || !state.unlocked) return;
+      if (!delayMs || delayMs <= 0) {
+        fn();
+        return;
+      }
+      var tid = setTimeout(function () {
+        var i = state.sfxTimers.indexOf(tid);
+        if (i >= 0) state.sfxTimers.splice(i, 1);
+        if (state.disposed || state.muted || state.sfxMuted || !state.unlocked) return;
+        fn();
+      }, delayMs);
+      state.sfxTimers.push(tid);
+    }
+
+    /**
+     * speak(text, opts)
+     * Cancela apenas a fala anterior (stopSpeech), preservando efeitos SFX em curso (a menos que opts.stopSfx=true).
+     */
+    function speak(text, o) {
+      o = o || {};
+      if (state.disposed) return { mode: 'disposed' };
+      stopSpeech();
+      if (o.stopSfx) stopSfx();
+
+      var token = state.speakToken;
+      var done = false;
+      state.lastError = null;
+
+      var displayCaption = Array.isArray(text)
+        ? text.map(function (c) { return c.text; }).join(' ')
+        : String(text || '').replace(/\[en:\s*([^\]]+)\]/gi, '$1');
+
+      function finish() {
+        if (done || token !== state.speakToken) return;
+        done = true;
+        if (state.watchdog) { clearTimeout(state.watchdog); state.watchdog = null; }
+        if (state.chunkTimer) { clearTimeout(state.chunkTimer); state.chunkTimer = null; }
+        if (o.onEnd) try { o.onEnd(); } catch (e) {}
+      }
+
+      try { cfg.onCaption(displayCaption); } catch (e) {}
+
+      if (state.muted || !state.unlocked) {
+        state.lastMode = 'caption-only'; emit();
+        setTimeout(finish, 0);
+        return { mode: 'caption-only' };
+      }
+
+      var clip = o.key && state.clips[o.key];
+      if (clip && (win.Audio || (typeof Audio !== 'undefined'))) {
+        try {
+          var A = win.Audio || Audio;
+          var a = new A(clip);
+          a.volume = cfg.volume;
+          a.onended = finish;
+          a.onerror = function () { speechSequence(); };
+          state.currentAudio = a;
+          var p = a.play();
+          if (p && p.catch) p.catch(function () { speechSequence(); });
+          state.lastMode = 'clip'; emit();
+          armWatchdog(token, finish);
+          return { mode: 'clip' };
+        } catch (e) { state.lastError = String(e && e.message || e); }
+      }
+
+      return speechSequence();
+
+      function speechSequence() {
+        if (token !== state.speakToken || done) return { mode: 'stale' };
+        if (!synth || !Utter) {
+          state.lastMode = 'caption-only';
+          reportProblem('speech-unavailable');
+          setTimeout(finish, 0);
+          return { mode: 'caption-only' };
+        }
+        if (!state.voice) refreshVoice();
+
+        var chunks = cfg.expressiveProsody
+          ? splitExpressiveChunks(text, cfg.rate, cfg.pitch, cfg.pauseMs)
+          : [{ text: displayCaption, lang: cfg.lang, rate: cfg.rate, pitch: cfg.pitch, pause: 0 }];
+
+        if (!chunks.length) {
+          setTimeout(finish, 0);
+          return { mode: 'caption-only' };
+        }
+
+        state.lastMode = 'speech'; emit();
+        armWatchdog(token, finish);
+
+        var sequenceVoice = state.voice, sequenceEnVoice = state.enVoice;
+        var idx = 0;
+        function playNextChunk() {
+          if (token !== state.speakToken || done) return;
+          if (idx >= chunks.length) { finish(); return; }
+          var c = chunks[idx++];
+          try {
+            var u = new Utter(c.text);
+            state.activeUtterance = u;
+            var isEn = /^en/i.test(c.lang || '');
+            var chosenVoice = isEn ? sequenceEnVoice : sequenceVoice;
+            u.lang = (chosenVoice && chosenVoice.lang) || c.lang || cfg.lang;
+            if (chosenVoice) u.voice = chosenVoice;
+            u.rate = c.rate != null ? c.rate : cfg.rate;
+            u.pitch = c.pitch != null ? c.pitch : cfg.pitch;
+            u.volume = cfg.volume;
+
+            var chunkDone = false;
+            function nextOrFinish() {
+              if (chunkDone || token !== state.speakToken || done) return;
+              chunkDone = true;
+              if (idx >= chunks.length) {
+                finish();
+              } else {
+                state.chunkTimer = setTimeout(playNextChunk, c.pause != null ? c.pause : cfg.pauseMs);
+              }
+            }
+            u.onend = nextOrFinish;
+            u.onerror = function (ev) {
+              if (chunkDone || token !== state.speakToken || done) return;
+              chunkDone = true;
+              var errCode = (ev && ev.error) || 'error';
+              if (errCode !== 'canceled' && errCode !== 'interrupted') {
+                try { synth.cancel(); } catch (e) {}
+                reportProblem('speech:' + errCode);
+              }
+              finish();
+            };
+            synth.speak(u);
+          } catch (e) {
+            reportProblem(String(e && e.message || e));
+            finish();
+          }
+        }
+
+        playNextChunk();
+        return { mode: 'speech', chunks: chunks.length };
+      }
+    }
+
+    function armWatchdog(token, finish) {
+      if (state.watchdog) clearTimeout(state.watchdog);
+      state.watchdog = setTimeout(function () {
+        if (token !== state.speakToken) return;
+        try { if (synth) synth.cancel(); } catch (e) {}
+        reportProblem('speech-timeout');
+        finish();
+      }, cfg.maxSpeakMs);
+    }
+
+    // ---------- Chimes e Efeitos Procedurais sob Orçamento de Vozes ----------
+    var CHIMES = {
+      ok:       [[523.25, 0.00, 0.12], [659.25, 0.09, 0.16]],
+      undo:     [[440.00, 0.00, 0.10], [349.23, 0.08, 0.14]],
+      soft:     [[392.00, 0.00, 0.18]],
+      embarcar: [[392.00, 0.00, 0.14], [523.25, 0.11, 0.14], [659.25, 0.22, 0.22]],
+      hub:      [[587.33, 0.00, 0.12], [739.99, 0.09, 0.14], [880.00, 0.18, 0.22]],
+      confeitar:[[659.25, 0.00, 0.10], [783.99, 0.08, 0.12], [1046.50, 0.16, 0.20]],
+      forno:    [[523.25, 0.00, 0.14], [659.25, 0.12, 0.14], [783.99, 0.24, 0.14], [1046.50, 0.36, 0.26]]
+    };
+
+    function chime(name) {
+      var notes = CHIMES[name] || CHIMES.soft;
+      var totalDurMs = Math.ceil((notes[notes.length - 1][1] + notes[notes.length - 1][2]) * 1000) + 20;
+      var vObj = allocateSfxVoice('chime:' + (name || 'soft'), totalDurMs, false);
+      if (!vObj) return false;
+      try {
+        var c = state.ctx;
+        var t0 = c.currentTime || 0;
+        if (vObj.voiceGain.gain && vObj.voiceGain.gain.setValueAtTime) {
+          vObj.voiceGain.gain.setValueAtTime(1, t0);
+        }
+        notes.forEach(function (n) {
+          var osc = c.createOscillator();
+          var g = c.createGain();
+          osc.type = 'sine';
+          if (osc.frequency.setValueAtTime) osc.frequency.setValueAtTime(n[0], t0 + n[1]);
+          else osc.frequency.value = n[0];
+          g.gain.setValueAtTime(0.0001, t0 + n[1]);
+          g.gain.exponentialRampToValueAtTime(0.13, t0 + n[1] + 0.018);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + n[1] + n[2]);
+          osc.connect(g); g.connect(vObj.voiceGain);
+          osc.start(t0 + n[1]); osc.stop(t0 + n[1] + n[2] + 0.015);
+          vObj.sources.push(osc);
+        });
+        return true;
+      } catch (e) {
+        terminateVoice(vObj, true);
+        state.lastError = String(e && e.message || e);
+        return false;
+      }
+    }
+
+    // 1. Batedeira / Liquidificador (1 voz SFX completa contendo motor + LFO + filtro lowpass)
+    function sfxBlender(durationMs) {
+      var durMs = durationMs || 800;
+      var vObj = allocateSfxVoice('blender', durMs, false);
+      if (!vObj) return false;
+      try {
+        var c = state.ctx;
+        var dur = durMs / 1000;
+        var t0 = c.currentTime || 0;
+        var motor = c.createOscillator();
+        var lfo = c.createOscillator();
+        var lfoGain = c.createGain();
+        var filter = c.createBiquadFilter ? c.createBiquadFilter() : null;
+
+        motor.type = 'sawtooth';
+        if (motor.frequency.setValueAtTime) {
+          motor.frequency.setValueAtTime(82, t0);
+          motor.frequency.exponentialRampToValueAtTime(145, t0 + dur * 0.45);
+          motor.frequency.exponentialRampToValueAtTime(95, t0 + dur);
+        }
+        lfo.type = 'sine';
+        if (lfo.frequency.setValueAtTime) lfo.frequency.setValueAtTime(13, t0);
+        if (lfoGain.gain.setValueAtTime) lfoGain.gain.setValueAtTime(20, t0);
+
+        vObj.voiceGain.gain.setValueAtTime(0.0001, t0);
+        vObj.voiceGain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.04);
+        vObj.voiceGain.gain.setValueAtTime(0.11, t0 + Math.max(0.05, dur - 0.06));
+        vObj.voiceGain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+
+        lfo.connect(lfoGain);
+        lfoGain.connect(motor.frequency);
+        if (filter) {
+          filter.type = 'lowpass';
+          if (filter.frequency.setValueAtTime) filter.frequency.setValueAtTime(380, t0);
+          motor.connect(filter);
+          filter.connect(vObj.voiceGain);
+        } else {
+          motor.connect(vObj.voiceGain);
+        }
+
+        motor.start(t0); motor.stop(t0 + dur + 0.015);
+        lfo.start(t0); lfo.stop(t0 + dur + 0.015);
+        vObj.sources.push(motor, lfo);
+        return true;
+      } catch (e) {
+        terminateVoice(vObj, true);
+        state.lastError = String(e && e.message || e);
+        return false;
+      }
+    }
+
+    // 2. Confeitos (agendados via scheduleSfx para respeitar limite de polifonia e cancelamento futuro)
+    function sfxSprinkles() {
+      var nowMs = nowFn();
+      var lastAt = state.lastSfxAtByKey['sprinkles'];
+      if (lastAt != null && (nowMs - lastAt) < cfg.cooldownMs) {
+        state.cooldownDrops++;
+        return false;
+      }
+      if (state.disposed || state.muted || state.sfxMuted || !state.unlocked) return false;
+      state.lastSfxAtByKey['sprinkles'] = nowMs;
+
+      var freqs = [1174.66, 1318.51, 1479.98, 1760.00, 1975.53];
+      freqs.forEach(function (f, i) {
+        scheduleSfx(i * 50, function () {
+          var vObj = allocateSfxVoice('sprinkleGrain', 85, true);
+          if (!vObj) return;
+          try {
+            var c = state.ctx;
+            var t0 = c.currentTime || 0;
+            var osc = c.createOscillator();
+            osc.type = i % 2 === 0 ? 'sine' : 'triangle';
+            if (osc.frequency.setValueAtTime) osc.frequency.setValueAtTime(f, t0);
+            else osc.frequency.value = f;
+            vObj.voiceGain.gain.setValueAtTime(0.0001, t0);
+            vObj.voiceGain.gain.exponentialRampToValueAtTime(0.10, t0 + 0.008);
+            vObj.voiceGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.070);
+            osc.connect(vObj.voiceGain);
+            osc.start(t0); osc.stop(t0 + 0.080);
+            vObj.sources.push(osc);
+          } catch (e) { terminateVoice(vObj, true); }
+        });
+      });
+      return true;
+    }
+
+    // 3. Assoprar Velinha por toque (1 voz SFX completa contendo sopro filtrado + brilho)
+    function sfxBlowCandle() {
+      var vObj = allocateSfxVoice('blowCandle', 620, false);
+      if (!vObj) return false;
+      try {
+        var c = state.ctx;
+        var t0 = c.currentTime || 0;
+        if (vObj.voiceGain.gain.setValueAtTime) vObj.voiceGain.gain.setValueAtTime(1, t0);
+
+        if (c.createBuffer && c.createBufferSource) {
+          var sr = c.sampleRate || 22050;
+          var len = Math.floor(sr * 0.38);
+          var buf = c.createBuffer(1, len, sr);
+          var data = buf.getChannelData ? buf.getChannelData(0) : null;
+          if (data) {
+            for (var i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1);
+          }
+          var noise = c.createBufferSource();
+          noise.buffer = buf;
+          var ng = c.createGain();
+          ng.gain.setValueAtTime(0.0001, t0);
+          ng.gain.exponentialRampToValueAtTime(0.13, t0 + 0.05);
+          ng.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.37);
+
+          if (c.createBiquadFilter) {
+            var bp = c.createBiquadFilter();
+            bp.type = 'bandpass';
+            if (bp.frequency.setValueAtTime) {
+              bp.frequency.setValueAtTime(1300, t0);
+              bp.frequency.exponentialRampToValueAtTime(360, t0 + 0.36);
+            }
+            if (bp.Q && bp.Q.setValueAtTime) bp.Q.setValueAtTime(2.5, t0);
+            noise.connect(bp); bp.connect(ng);
+          } else {
+            noise.connect(ng);
+          }
+          ng.connect(vObj.voiceGain);
+          noise.start(t0); noise.stop(t0 + 0.38);
+          vObj.sources.push(noise);
+        }
+
+        [[1318.51, 0.34, 0.12], [1760.00, 0.42, 0.18]].forEach(function (n) {
+          var osc = c.createOscillator();
+          var g = c.createGain();
+          osc.type = 'sine';
+          if (osc.frequency.setValueAtTime) osc.frequency.setValueAtTime(n[0], t0 + n[1]);
+          g.gain.setValueAtTime(0.0001, t0 + n[1]);
+          g.gain.exponentialRampToValueAtTime(0.10, t0 + n[1] + 0.012);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + n[1] + n[2]);
+          osc.connect(g); g.connect(vObj.voiceGain);
+          osc.start(t0 + n[1]); osc.stop(t0 + n[1] + n[2] + 0.015);
+          vObj.sources.push(osc);
+        });
+        return true;
+      } catch (e) {
+        terminateVoice(vObj, true);
+        state.lastError = String(e && e.message || e);
+        return false;
+      }
+    }
+
+    // 4. Evento discreto de Formiguinha por cor/grupo (com cooldown 140ms e limite de 3 vozes)
+    function antStep(colorKey) {
+      var vObj = allocateSfxVoice('antStep', 125, false);
+      if (!vObj) return false;
+      try {
+        var c = state.ctx;
+        var t0 = c.currentTime || 0;
+        var f = PENTATONIC_ANTS[colorKey] || PENTATONIC_ANTS.red;
+        var osc = c.createOscillator();
+        var sub = c.createOscillator();
+        osc.type = 'sine';
+        sub.type = 'triangle';
+        if (osc.frequency.setValueAtTime) osc.frequency.setValueAtTime(f, t0);
+        else osc.frequency.value = f;
+        if (sub.frequency.setValueAtTime) sub.frequency.setValueAtTime(f * 2, t0);
+        else sub.frequency.value = f * 2;
+
+        vObj.voiceGain.gain.setValueAtTime(0.0001, t0);
+        vObj.voiceGain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.010);
+        vObj.voiceGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.110);
+
+        osc.connect(vObj.voiceGain);
+        sub.connect(vObj.voiceGain);
+        osc.start(t0); osc.stop(t0 + 0.120);
+        sub.start(t0); sub.stop(t0 + 0.060);
+        vObj.sources.push(osc, sub);
+        return true;
+      } catch (e) {
+        terminateVoice(vObj, true);
+        return false;
+      }
+    }
+
+    function onVisibility() {
+      if (!doc) return;
+      if (doc.hidden) stopAll();
+      else resumeCtx();
+    }
+    if (doc && doc.addEventListener) {
+      doc.addEventListener('visibilitychange', onVisibility);
+      if (win.addEventListener) win.addEventListener('pagehide', stopAll);
+    }
+
+    function dispose() {
+      state.disposed = true;
+      stopAll();
+      if (state.ctx && state.ctx.close) { try { state.ctx.close().catch(function(){}); } catch(e){} }
+      if (state.masterSfxGain && state.masterSfxGain.disconnect) {
+        try { state.masterSfxGain.disconnect(); } catch (e) {}
+      }
+      if (doc && doc.removeEventListener) {
+        try { doc.removeEventListener('visibilitychange', onVisibility); } catch (e) {}
+      }
+      if (win && win.removeEventListener) {
+        try { win.removeEventListener('pagehide', stopAll); } catch (e) {}
+      }
+      if (synth && typeof synth.removeEventListener === 'function') {
+        try { synth.removeEventListener('voiceschanged', refreshVoice); } catch (e) {}
+      }
+      emit();
+    }
+
+    function registerClip(key, dataUri) {
+      if (typeof dataUri === 'string' && /^data:audio\//.test(dataUri)) state.clips[key] = dataUri;
+      else throw new Error('registerClip exige data URI audio/*');
+    }
+    function setMuted(m) { state.muted = !!m; if (state.muted) stopAll(); else emit(); }
+    function setSfxMuted(m) { state.sfxMuted = !!m; if (state.sfxMuted) stopSfx(); emit(); }
+
+    function getDiagnostics() {
+      var v = state.voice;
+      var sc = v ? scoreVoice(v, cfg.lang) : -1;
+      return {
+        unlocked: state.unlocked,
+        muted: state.muted,
+        sfxMuted: state.sfxMuted,
+        disposed: state.disposed,
+        hasSpeechSynthesis: !!(synth && Utter),
+        hasAudioContext: !!AC,
+        ctxState: state.ctx ? state.ctx.state : null,
+        rate: cfg.rate,
+        pitch: cfg.pitch,
+        pauseMs: cfg.pauseMs,
+        maxPolyphony: cfg.maxPolyphony,
+        cooldownMs: cfg.cooldownMs,
+        activeVoicesCount: state.activeVoices.length,
+        peakActiveVoices: state.peakActiveVoices,
+        pendingSfxTimers: state.sfxTimers.length,
+        stolenVoicesCount: state.stolenCount,
+        cooldownDropsCount: state.cooldownDrops,
+        voice: v ? { name: v.name, lang: v.lang, localService: !!v.localService, score: sc } : null,
+        enVoice: state.enVoice ? { name: state.enVoice.name, lang: state.enVoice.lang } : null,
+        voiceLooksFeminine: v ? !MALE_HINTS.test(v.name) : false,
+        voiceIsGooglePtBr: v ? /google\s+portugu[eê]s/i.test(v.name) : false,
+        childLikeTimbreVerified: false,
+        clips: Object.keys(state.clips),
+        lastMode: state.lastMode,
+        lastError: state.lastError
+      };
+    }
+
+    return {
+      unlock: unlock, speak: speak, stop: stopAll, stopSpeech: stopSpeech, stopSfx: stopSfx,
+      dispose: dispose, chime: chime,
+      sfxBlender: sfxBlender, sfxSprinkles: sfxSprinkles, sfxBlowCandle: sfxBlowCandle,
+      antStep: antStep, scheduleSfx: scheduleSfx,
+      registerClip: registerClip, setMuted: setMuted, setSfxMuted: setSfxMuted,
+      getDiagnostics: getDiagnostics, refreshVoice: refreshVoice,
+      splitExpressiveChunks: splitExpressiveChunks
+    };
+  }
+
+  return {
+    create: create,
+    scoreVoice: scoreVoice,
+    splitExpressiveChunks: splitExpressiveChunks,
+    PENTATONIC_ANTS: PENTATONIC_ANTS
+  };
+});
+
+</script><script>
+(()=>{
+const $=id=>document.getElementById(id),ctx=$('art').getContext('2d');
+let state,history=[],epoch=0,frame=null,progress=0,muted=false,disposed=false;
+$('reduce').checked=window.matchMedia?.('(prefers-reduced-motion: reduce)').matches||false;
+const audio=window.GigiAudio.create({window,document,rate:1.05,pitch:1.14,pauseMs:170,maxSpeakMs:30000,
+onCaption(t){$('caption').textContent=t},
+onProblem(){if(!muted){$('audioError').hidden=false;$('audioError').textContent='A voz não tocou. Confira o volume e toque em Ouvir a Lia. Um adulto pode ler a fala acima.'}}});
+const flour='🌾',base='🥛',flavors={vanilla:['Baunilha','🌼','#e5c080'],chocolate:['Chocolate','🍫','#86563e'],strawberry:['Morango','🍓','#d98c88']};
+const goals={flour:3,base:2,flavor:1};
+function snapshot(){return {...state,items:[...state.items],sprinkles:[...state.sprinkles],served:[...state.served]}}
+function record(){history.push(snapshot())}
+function stop(){epoch++;cancelAnimationFrame(frame);frame=null;audio.stop()}
+function reset(){stop();disposed=false;history=[];state={stage:'choose',flavor:'vanilla',wrapper:'#79bcb1',items:[],frost:'#f5cfda',sprinkles:[],candle:false,lit:false,served:[false,false]};progress=0;render()}
+function talk(text){audio.stopSpeech();if(document.hidden||disposed)return;$('audioError').hidden=true;audio.unlock();audio.speak(text)}
+function say(){
+ const name=flavors[state.flavor][0];
+ return ({choose:'Oi, Gigi! Vamos fazer dois cupcakes para o coelho e a gatinha? Escolha o sabor da massa e a cor das forminhas!',
+ prep:'Para nossos dois cupcakes: três medidas de farinha, duas de base cremosa e uma de sabor. Toque para colocar. Se quiser devolver uma medida, toque nela na tigela.',
+ mix:'Vamos misturar a massa, Gigi!',
+ batter:'A massa ficou misturada! Agora vamos colocar os bolinhos no forninho.',
+ bake:'Os cupcakes estão crescendo! Você pode cancelar e voltar se quiser.',
+ decorate:'Chegou a parte de inventar! Escolha a cobertura e coloque confeitos. A velinha é uma surpresa: toque nela para apagar!',
+ serve:'Hora do piquenique! Escolha quem vai receber o primeiro cupcake.',
+ done:'Você preparou dois cupcakes, Gigi! Cada amigo recebeu um. Se quiser, desenhe sua receita e conte para alguém como você fez.'
+ })[state.stage];
+}
+function count(k){return state.items.filter(x=>x===k).length}
+function ready(){return Object.keys(goals).every(k=>count(k)===goals[k])}
+function add(k){if(state.stage!=='prep'||!Object.hasOwn(goals,k)||count(k)>=3)return;record();state.items.push(k);render()}
+function remove(i){if(state.stage!=='prep'||i<0||i>=state.items.length)return;record();state.items.splice(i,1);render()}
+function undo(){if(!history.length||disposed)return;stop();state=history.pop();progress=0;render()}
+function animate(stage,next){
+ record();state.stage=stage;progress=0;render();audio.unlock();
+ if(stage==='mix')audio.sfxBlender(850);
+ talk(say());
+ const token=epoch;
+ if($('reduce').checked){state.stage=next;progress=1;render();talk(say());return}
+ let began;
+ function tick(time){
+  if(token!==epoch||disposed||state.stage!==stage)return;
+  began??=time;progress=Math.min(1,(time-began)/(stage==='mix'?1100:2200));draw();
+  if(progress<1)frame=requestAnimationFrame(tick);
+  else{frame=null;state.stage=next;render();talk(say())}
+ }
+ frame=requestAnimationFrame(tick);
+}
+function action(){
+ if(disposed)return;
+ if(state.stage==='choose'){record();state.stage='prep';render();talk(say())}
+ else if(state.stage==='prep'){
+  if(!ready()){
+   const missing=Object.keys(goals).filter(k=>count(k)!==goals[k]).map(k=>({flour:'farinha',base:'base cremosa',flavor:'sabor'}[k]));
+   const message='Vamos conferir '+missing.join(' e ')+'. O cartão mostra as medidas. Você pode colocar ou devolver.';
+   $('status').textContent=message;talk(message);return;
+  }animate('mix','batter');
+ }else if(state.stage==='mix'||state.stage==='bake')undo();
+ else if(state.stage==='batter')animate('bake','decorate');
+ else if(state.stage==='decorate'){record();state.stage='serve';render();talk(say())}
+ else if(state.stage==='done'){reset();talk(say())}
+}
+function serve(i){if(state.stage!=='serve'||state.served[i])return;record();state.served[i]=true;if(state.served.every(Boolean))state.stage='done';render();audio.chime('ok');talk(say())}
+function sprinkle(){if(state.stage!=='decorate'||state.sprinkles.length>=5)return;record();state.sprinkles.push(state.sprinkles.length);render();audio.unlock();audio.sfxSprinkles()}
+function candle(){if(state.stage!=='decorate')return;record();if(!state.candle){state.candle=true;state.lit=true;}else if(state.lit){state.lit=false;audio.unlock();audio.sfxBlowCandle()}else{state.candle=false;}render()}
+function rect(x,y,w,h,color,r=10){ctx.fillStyle=color;ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill()}
+function circle(x,y,r,color){ctx.fillStyle=color;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill()}
+function label(text,x,y,size=25){ctx.fillStyle='#624c3e';ctx.font=size+'px system-ui';ctx.textAlign='center';ctx.fillText(text,x,y)}
+function cupcake(x,y,scale=1,growth=1){
+ ctx.save();ctx.translate(x,y);ctx.scale(scale,scale);
+ const mass=flavors[state.flavor][2];
+ ctx.fillStyle=mass;ctx.beginPath();ctx.ellipse(0,-35,57,15+40*growth,0,0,7);ctx.fill();
+ ctx.fillStyle=state.wrapper;ctx.beginPath();ctx.moveTo(-56,-33);ctx.lineTo(56,-33);ctx.lineTo(43,47);ctx.lineTo(-43,47);ctx.closePath();ctx.fill();
+ for(let i=-36;i<=36;i+=12){ctx.strokeStyle='#ffffff55';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(i,-26);ctx.lineTo(i*.78,39);ctx.stroke()}
+ if(['decorate','serve','done'].includes(state.stage)){
+  ctx.fillStyle=state.frost;ctx.beginPath();ctx.moveTo(-58,-39);ctx.bezierCurveTo(-73,-60,-37,-75,-30,-79);ctx.bezierCurveTo(-56,-99,-4,-116,5,-132);ctx.bezierCurveTo(11,-108,49,-101,34,-81);ctx.bezierCurveTo(68,-75,67,-44,58,-39);ctx.closePath();ctx.fill();
+  ctx.strokeStyle='#ffffff66';ctx.lineWidth=5;for(let y=-50;y>-100;y-=21){ctx.beginPath();ctx.moveTo(-35,y);ctx.quadraticCurveTo(0,y+9,35,y-4);ctx.stroke()}
+  state.sprinkles.forEach((batch)=>{for(let j=0;j<9;j++){const xx=((batch*29+j*17)%85)-42,yy=-43-((j*13+batch*23)%53);rect(xx,yy,7,3,['#f0b944','#df7778','#74aba3'][j%3],1)}});
+  if(state.candle){rect(-4,-160,8,38,'#68b8c5',2);if(state.lit){ctx.fillStyle='#ffb740';ctx.beginPath();ctx.moveTo(0,-181);ctx.quadraticCurveTo(-14,-162,0,-163);ctx.quadraticCurveTo(12,-164,0,-181);ctx.fill();circle(0,-167,3,'#ffe9a9')}}
+ }
+ ctx.restore();
+}
+function draw(){
+ const sky=ctx.createLinearGradient(0,0,0,270);sky.addColorStop(0,'#9dcdd1');sky.addColorStop(1,'#f7e4bf');ctx.fillStyle=sky;ctx.fillRect(0,0,720,430);
+ circle(631,56,27,'#fff0bd');
+ ctx.fillStyle='#6f9986';ctx.beginPath();ctx.moveTo(0,162);ctx.lineTo(85,95);ctx.lineTo(157,151);ctx.lineTo(245,87);ctx.lineTo(355,172);ctx.lineTo(480,126);ctx.lineTo(590,176);ctx.lineTo(720,151);ctx.lineTo(720,260);ctx.lineTo(0,260);ctx.fill();
+ rect(0,190,720,90,'#74b7b4',0);for(let i=0;i<16;i++)rect(i*49,215+i%4*12,25,2,'#d9eee2',0);
+ rect(0,280,720,150,'#c58e64',0);rect(0,278,720,12,'#edc294',0);
+ rect(20,48,152,111,'#fff7dd',14);label('ATELIÊ DA LIA',96,81,15);label('🧁',97,134,45);
+ if(state.stage==='prep'||state.stage==='mix'||state.stage==='batter'){
+  const shake=state.stage==='mix'&&!$('reduce').checked?Math.sin(progress*35)*4:0;
+  ctx.fillStyle='#f6e3bd';ctx.beginPath();ctx.ellipse(360+shake,284,114,35,0,0,7);ctx.fill();
+  ctx.fillStyle='#7caaa2';ctx.beginPath();ctx.moveTo(245+shake,282);ctx.quadraticCurveTo(265,389,360,390);ctx.quadraticCurveTo(453,389,475+shake,282);ctx.closePath();ctx.fill();
+  ctx.fillStyle=state.stage==='prep'?'#ebd5b3':flavors[state.flavor][2];ctx.beginPath();ctx.ellipse(360+shake,285,104,29,0,0,7);ctx.fill();
+  if(state.stage==='prep')state.items.forEach((k,i)=>label(k==='flour'?'🌾':k==='base'?'🥛':flavors[state.flavor][1],305+i%3*55,280+Math.floor(i/3)*22,27));
+  if(state.stage==='mix'){rect(355+shake,211,12,80,'#f5f0d8',4);rect(330+shake,184,70,40,'#d68778',14)}
+ }else if(state.stage==='bake'){
+  rect(204,110,312,283,'#b66357',22);rect(225,151,270,212,'#483c36',12);rect(237,163,246,185,'#f5b665',8);
+  cupcake(307,300,.62,.2+.8*progress);cupcake(417,300,.62,.2+.8*progress);
+  rect(225,122,270,14,'#efceaa',7);
+ }else{
+  if(state.stage==='serve'||state.stage==='done'){
+   label('🐰',156,242,77);label('🐱',565,242,77);
+   if(state.served[0])cupcake(156,340,.66);
+   if(state.served[1])cupcake(565,340,.66);
+   if(!state.served[0])cupcake(302,330,.66);
+   if(!state.served[1])cupcake(420,330,.66);
+  }else{cupcake(294,330,.95);cupcake(450,335,.82)}
+ }
+}
+function button(id,text,fn,disabled=false){const b=document.createElement('button');b.textContent=text;b.onclick=fn;b.disabled=disabled;$(id).append(b);return b}
+function render(){
+ draw();$('title').textContent={choose:'Escolher e imaginar',prep:'Uma medida de cada vez',mix:'A batedeira da Lia',batter:'Prontinhos para o forno',bake:'Crescendo no forninho',decorate:'Confeitar do seu jeito',serve:'Piquenique dos bichinhos',done:'Uma receita para compartilhar'}[state.stage];
+ $('caption').textContent=say();$('status').textContent='';
+ for(const id of ['choices','ingredients','items'])$(id).replaceChildren();
+ $('recipe').hidden=state.stage!=='prep';
+ if(state.stage==='choose'){
+  Object.entries(flavors).forEach(([key,v])=>{const b=button('choices',v[1]+' '+v[0],()=>{record();state.flavor=key;render()});b.setAttribute('aria-pressed',String(state.flavor===key))});
+  for(const color of ['#79bcb1','#e99ba6','#e6bd60']){const b=button('ingredients','🧁',()=>{record();state.wrapper=color;render()});b.style.background=color;b.setAttribute('aria-label','Forminha '+color)}
+ }
+ if(state.stage==='prep'){
+  $('recipe').textContent='🌾 × 3  +  🥛 × 2  +  '+flavors[state.flavor][1]+' × 1  →  🧁 🧁';
+  for(const [k,icon] of [['flour',flour],['base',base],['flavor',flavors[state.flavor][1]]]){
+   const b=button('ingredients',icon+' +',()=>add(k),count(k)>=3);b.setAttribute('aria-label','Adicionar medida de '+{flour:'farinha',base:'base',flavor:'sabor'}[k]);
+  }
+  state.items.forEach((k,i)=>{const b=button('items',k==='flour'?flour:k==='base'?base:flavors[state.flavor][1],()=>remove(i));b.setAttribute('aria-label','Devolver medida '+(i+1))});
+ }
+ if(state.stage==='decorate'){
+  for(const color of ['#f5cfda','#f8e3ba','#845d4a','#bfdfd6']){const b=button('choices','🍦',()=>{record();state.frost=color;render()});b.style.background=color;b.setAttribute('aria-label','Cobertura '+color)}
+  button('ingredients','✨ Confeitos',sprinkle,state.sprinkles.length>=5);
+  button('ingredients',!state.candle?'🕯️ Colocar velinha':state.lit?'💨 Apagar velinha':'🕯️ Retirar velinha',candle);
+ }
+ if(state.stage==='serve'){
+  button('choices','🐰 Servir ao coelho',()=>serve(0),state.served[0]);
+  button('choices','🐱 Servir à gatinha',()=>serve(1),state.served[1]);
+ }
+ $('next').hidden=state.stage==='serve';
+ $('next').textContent={choose:'🥣 Vamos preparar',prep:'🌀 Misturar',mix:'↩ Cancelar mistura',batter:'♨️ Levar ao forno',bake:'↩ Cancelar forno',decorate:'🧁 Servir',done:'↻ Fazer outra receita'}[state.stage]||'';
+ $('undo').disabled=!history.length;
+ if(state.stage==='done')$('status').textContent='Parabéns, Gigi! Você colocou 3 medidas de farinha, 2 de base e 1 de sabor e preparou dois cupcakes.';
+}
+$('next').onclick=action;$('undo').onclick=undo;$('restart').onclick=()=>{reset();talk(say())};$('listen').onclick=()=>talk(say());
+$('mute').onclick=()=>{muted=!muted;audio.setMuted(muted);$('mute').textContent=muted?'🔇 Som desligado':'🔊 Som ligado';$('audioError').hidden=true};
+$('effects').onchange=()=>audio.setSfxMuted(!$('effects').checked);
+document.addEventListener('visibilitychange',()=>{if(document.hidden){stop();if(state.stage==='mix')state.stage='prep';if(state.stage==='bake')state.stage='batter';render()}});
+window.addEventListener('pagehide',stop);
+window.LiaActivity={dispose(){disposed=true;stop();audio.dispose()}};
+reset();
+})();
+</script></html>
