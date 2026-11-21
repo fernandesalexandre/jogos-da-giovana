@@ -611,6 +611,28 @@
       margin-bottom: 14px;
     }
 
+    .btn-clear-album {
+      background: #fee2e2;
+      color: #b91c1c;
+      border: 2px solid #fca5a5;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+    .btn-clear-album:hover {
+      background: #fecaca;
+      transform: scale(1.05);
+    }
+    .btn-clear-album:active {
+      transform: scale(0.95);
+    }
+
     .album-header h2 {
       font-size: 1.6rem;
       font-weight: 800;
@@ -804,7 +826,10 @@
     <section id="screen-album" class="screen">
       <div class="album-header">
         <h2>📖 Meu Álbum de Descobertas</h2>
-        <button class="btn-icon" onclick="closeAlbum()" title="Fechar">❌</button>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <button class="btn-clear-album" onclick="resetAlbumProgress()" title="Zerar Álbum e deixar limpo para a Gigi">🗑️ Zerar Álbum</button>
+          <button class="btn-icon" onclick="closeAlbum()" title="Fechar">❌</button>
+        </div>
       </div>
 
       <div class="album-grid" id="album-grid">
@@ -1041,6 +1066,15 @@
         </svg>`
       }
     ];
+
+    // Parâmetro de URL para zerar histórico se solicitado: ?limpar ou ?reset
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.has('limpar') || urlParams.has('reset') || urlParams.has('zerar')) {
+        localStorage.removeItem("fabrica_surpresas_album");
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    } catch(e) {}
 
     // Coleção salva no navegador
     let unlockedCreations = JSON.parse(localStorage.getItem("fabrica_surpresas_album") || "[]");
@@ -1477,6 +1511,18 @@
 
       renderAlbumGrid();
       speak("Veja só todas as suas criações mágicas!");
+    }
+
+    function resetAlbumProgress() {
+      if (confirm("Quer deixar o Álbum novinho em folha para a Gigi começar do zero?")) {
+        playPop();
+        try {
+          localStorage.removeItem("fabrica_surpresas_album");
+        } catch(e) {}
+        unlockedCreations = [];
+        renderAlbumGrid();
+        speak("Álbum limpinho e zerado para a Gigi!");
+      }
     }
 
     function closeAlbum() {
