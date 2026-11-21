@@ -103,14 +103,14 @@
       position: relative;
       width: 100%;
       height: 100%;
-      display: none;
+      display: none !important;
       flex-direction: column;
       align-items: center;
       justify-content: center;
     }
 
     .screen.active {
-      display: flex;
+      display: flex !important;
     }
 
     /* =========================================================================
@@ -177,6 +177,7 @@
       position: relative;
       box-shadow: inset 0 4px 10px rgba(0, 0, 0, 0.06);
       transition: all 0.25s;
+      cursor: pointer;
     }
 
     .tube-slot.filled {
@@ -212,6 +213,11 @@
       align-items: center;
       justify-content: center;
       transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+
+    .tube-content svg {
+      width: 58px;
+      height: 58px;
     }
 
     .tube-content.pop {
@@ -337,8 +343,8 @@
     }
 
     .item-card {
-      min-width: 72px;
-      height: 72px;
+      min-width: 76px;
+      height: 76px;
       border-radius: 20px;
       background: #f8fafc;
       border: 3px solid #cbd5e1;
@@ -352,6 +358,11 @@
       box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
       transition: transform 0.15s, border-color 0.2s, background 0.2s;
       position: relative;
+    }
+
+    .item-card svg {
+      width: 44px;
+      height: 44px;
     }
 
     .item-card:active {
@@ -372,10 +383,6 @@
       margin-top: 2px;
     }
 
-    /* Cores das Formas */
-    .shape-circle { border-radius: 50%; }
-    .shape-square { border-radius: 6px; }
-
     /* =========================================================================
        TELA 2: TRANSFORMAÇÃO E ANIMAÇÃO
        ========================================================================= */
@@ -385,7 +392,7 @@
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(15, 23, 42, 0.85);
+      background: rgba(15, 23, 42, 0.88);
       backdrop-filter: blur(10px);
       z-index: 100;
       display: none;
@@ -431,7 +438,6 @@
        TELA 3: DECORAÇÃO E SALVAR NO ÁLBUM
        ========================================================================= */
     #screen-decorate {
-      display: none;
       flex-direction: column;
       justify-content: space-between;
       height: 100%;
@@ -449,8 +455,8 @@
     /* Mesa de Trabalho do Brinquedo */
     .toy-canvas-area {
       width: 95%;
-      max-width: 540px;
-      height: 340px;
+      max-width: 560px;
+      height: 350px;
       background: radial-gradient(circle, #ffffff 40%, #f1f5f9 100%);
       border: 6px solid #e2e8f0;
       border-radius: 36px;
@@ -468,17 +474,17 @@
       top: 14px;
       background: linear-gradient(135deg, #8b5cf6, #ec4899);
       color: white;
-      font-size: 1.15rem;
+      font-size: 1.25rem;
       font-weight: 800;
-      padding: 6px 22px;
+      padding: 6px 24px;
       border-radius: 20px;
       box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
       z-index: 10;
     }
 
     .toy-svg-container {
-      width: 260px;
-      height: 240px;
+      width: 270px;
+      height: 250px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -546,15 +552,15 @@
 
     .action-dock-btns {
       display: flex;
-      gap: 8px;
+      gap: 10px;
     }
 
     .btn-action-save {
       background: linear-gradient(135deg, #10b981, #059669);
       color: white;
-      font-size: 1.15rem;
+      font-size: 1.1rem;
       font-weight: 800;
-      padding: 12px 22px;
+      padding: 12px 20px;
       border-radius: 24px;
       border: 3px solid #ffffff;
       box-shadow: 0 6px 16px rgba(16, 185, 129, 0.35);
@@ -565,7 +571,23 @@
       white-space: nowrap;
     }
 
-    .btn-action-save:active {
+    .btn-action-new {
+      background: linear-gradient(135deg, #3b82f6, #6366f1);
+      color: white;
+      font-size: 1.1rem;
+      font-weight: 800;
+      padding: 12px 18px;
+      border-radius: 24px;
+      border: 3px solid #ffffff;
+      box-shadow: 0 6px 16px rgba(59, 130, 246, 0.35);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .btn-action-save:active, .btn-action-new:active {
       transform: scale(0.95);
     }
 
@@ -573,7 +595,6 @@
        TELA 4: ÁLBUM DE DESCOBERTAS
        ========================================================================= */
     #screen-album {
-      display: none;
       flex-direction: column;
       height: 100%;
       background: rgba(255, 255, 255, 0.95);
@@ -617,6 +638,7 @@
       padding: 8px;
       box-shadow: inset 0 2px 6px rgba(0,0,0,0.04);
       transition: all 0.2s;
+      cursor: pointer;
     }
 
     .album-slot.unlocked {
@@ -770,6 +792,9 @@
         <div class="action-dock-btns">
           <button class="btn-action-save" onclick="saveToAlbum()">
             <span>📸</span> Guardar no Álbum!
+          </button>
+          <button class="btn-action-new" onclick="startNewCreation()">
+            <span>🔄</span> Nova Invenção!
           </button>
         </div>
       </div>
@@ -1031,11 +1056,10 @@
           const u = new SpeechSynthesisUtterance(text);
           u.lang = 'pt-BR';
           u.rate = 1.0;
-          u.pitch = 1.25; // Voz doce e alegre infantil
+          u.pitch = 1.25;
 
           const voices = window.speechSynthesis.getVoices();
           const brVoices = voices.filter(v => v.lang === 'pt-BR' || v.lang.startsWith('pt'));
-          // Procura por vozes femininas naturais do Google/Microsoft
           const preferred = brVoices.find(v => v.name.includes('Google') || v.name.includes('Luciana') || v.name.includes('Francisca') || v.name.includes('Maria'));
           if (preferred) u.voice = preferred;
 
@@ -1146,7 +1170,7 @@
     }
 
     /* =========================================================================
-       CATÁLOGO DE INGREDIENTES
+       CATÁLOGO DE INGREDIENTES COM FORMAS VETORIAIS SVG REAIS
        ========================================================================= */
     const NUMBERS_DATA = [
       { val: 1, label: "Um", dots: 1 },
@@ -1156,11 +1180,33 @@
       { val: 5, label: "Cinco", dots: 5 }
     ];
 
+    // Formas com SVG nativo para cores 100% fiéis ao que a voz fala!
     const SHAPES_DATA = [
-      { id: "circle_blue", shape: "Círculo", color: "Azul", icon: "🔵", colorHex: "#3b82f6" },
-      { id: "square_red", shape: "Quadrado", color: "Vermelho", icon: "🟥", colorHex: "#ef4444" },
-      { id: "triangle_green", shape: "Triângulo", color: "Verde", icon: "🔺", colorHex: "#10b981" },
-      { id: "star_yellow", shape: "Estrela", color: "Amarela", icon: "⭐", colorHex: "#facc15" }
+      { 
+        id: "circle_blue", 
+        shape: "Círculo", 
+        color: "Azul", 
+        iconSvg: `<svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" fill="#3b82f6" stroke="#1d4ed8" stroke-width="3"/><circle cx="18" cy="18" r="6" fill="#93c5fd"/></svg>`
+      },
+      { 
+        id: "square_red", 
+        shape: "Quadrado", 
+        color: "Vermelho", 
+        iconSvg: `<svg viewBox="0 0 48 48"><rect x="6" y="6" width="36" height="36" rx="8" fill="#ef4444" stroke="#b91c1c" stroke-width="3"/><rect x="12" y="12" width="10" height="10" rx="3" fill="#fca5a5"/></svg>`
+      },
+      { 
+        id: "triangle_green", 
+        shape: "Triângulo", 
+        color: "Verde", 
+        // Triângulo VERDADEIRAMENTE VERDE!
+        iconSvg: `<svg viewBox="0 0 48 48"><polygon points="24,5 44,41 4,41" fill="#10b981" stroke="#047857" stroke-width="3"/><polygon points="24,14 34,35 14,35" fill="#6ee7b7" opacity="0.6"/></svg>`
+      },
+      { 
+        id: "star_yellow", 
+        shape: "Estrela", 
+        color: "Amarela", 
+        iconSvg: `<svg viewBox="0 0 48 48"><polygon points="24,4 30,17 44,18 33,28 36,42 24,34 12,42 15,28 4,18 18,17" fill="#facc15" stroke="#ca8a04" stroke-width="2.5"/><circle cx="21" cy="21" r="3" fill="#fef08a"/></svg>`
+      }
     ];
 
     const OBJECTS_DATA = [
@@ -1196,11 +1242,11 @@
           container.appendChild(btn);
         });
       } else if (currentTab === 1) {
-        // Formas e Cores
+        // Formas e Cores (com SVG real!)
         SHAPES_DATA.forEach(item => {
           const btn = document.createElement('div');
           btn.className = `item-card ${selectedShape?.id === item.id ? 'selected' : ''}`;
-          btn.innerHTML = `<span>${item.icon}</span><span class="item-subtext">${item.shape}</span>`;
+          btn.innerHTML = `${item.iconSvg}<span class="item-subtext">${item.shape}</span>`;
           btn.onclick = () => chooseShape(item);
           container.appendChild(btn);
         });
@@ -1241,7 +1287,6 @@
       renderCarousel();
       checkReadyToCreate();
 
-      // Avança suavemente para a próxima aba se ainda não escolhida
       if (!selectedShape) setTimeout(() => selectTab(1), 600);
     }
 
@@ -1254,7 +1299,7 @@
       const content = document.getElementById('tube-content-2');
 
       slot.classList.add('filled');
-      content.textContent = item.icon;
+      content.innerHTML = item.iconSvg;
       content.classList.remove('pop');
       void content.offsetWidth;
       content.classList.add('pop');
@@ -1307,8 +1352,6 @@
       const overlay = document.getElementById('screen-transform');
       overlay.style.display = 'flex';
 
-      // Determina qual das 6 criações surpresa será gerada
-      // Algoritmo determinístico baseado na soma dos atributos para a criança descobrir todas!
       const shapeIdx = SHAPES_DATA.findIndex(s => s.id === selectedShape.id);
       const objIdx = OBJECTS_DATA.findIndex(o => o.id === selectedObject.id);
       const creationIndex = (selectedNumber + shapeIdx + objIdx) % CREATIONS.length;
@@ -1331,8 +1374,9 @@
        ETAPA 3: DECORAÇÃO E SALVAR NO ÁLBUM
        ========================================================================= */
     function showDecorateScreen() {
-      document.getElementById('screen-machine').classList.remove('active');
-      document.getElementById('screen-album').classList.remove('active');
+      // Oculta com precisão todas as outras telas
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      
       const decScreen = document.getElementById('screen-decorate');
       decScreen.classList.add('active');
 
@@ -1357,7 +1401,6 @@
       sticker.className = 'applied-sticker';
       sticker.textContent = emoji;
 
-      // Posição inicial semi-aleatória perto do topo do brinquedo
       const offsetX = 180 + (Math.random() * 80 - 40);
       const offsetY = 80 + (Math.random() * 60 - 30);
       sticker.style.left = `${offsetX}px`;
@@ -1406,7 +1449,6 @@
       playMagicChime();
       triggerConfetti();
 
-      // Salva no LocalStorage
       if (!unlockedCreations.includes(currentCreation.id)) {
         unlockedCreations.push(currentCreation.id);
         localStorage.setItem("fabrica_surpresas_album", JSON.stringify(unlockedCreations));
@@ -1419,12 +1461,18 @@
       }, 1000);
     }
 
+    function startNewCreation() {
+      playPop();
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      document.getElementById('screen-machine').classList.add('active');
+      resetMachine();
+    }
+
     /* =========================================================================
        ETAPA 4: ÁLBUM DE DESCOBERTAS
        ========================================================================= */
     function openAlbum() {
-      document.getElementById('screen-machine').classList.remove('active');
-      document.getElementById('screen-decorate').classList.remove('active');
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
       document.getElementById('screen-album').classList.add('active');
 
       renderAlbumGrid();
@@ -1432,10 +1480,8 @@
     }
 
     function closeAlbum() {
-      document.getElementById('screen-album').classList.remove('active');
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
       document.getElementById('screen-machine').classList.add('active');
-
-      // Reseta a máquina para uma nova criação
       resetMachine();
     }
 
@@ -1525,7 +1571,7 @@
       confettiParticles.forEach((p, index) => {
         p.x += p.dx;
         p.y += p.dy;
-        p.dy += 0.35; // gravidade
+        p.dy += 0.35;
         p.rotation += p.dr;
 
         confCtx.save();
@@ -1545,10 +1591,8 @@
       }
     }
 
-    // Inicialização ao carregar
     window.addEventListener('DOMContentLoaded', () => {
       selectTab(0);
-      // Saudação inicial de boas-vindas
       setTimeout(() => {
         speak("Olá Lia! Bem-vinda à Fábrica de Surpresas! Escolha um número para começar!");
       }, 600);
